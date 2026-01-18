@@ -50,7 +50,7 @@ export function AutomationCard({ automation, onDelete }: AutomationCardProps) {
 
             <div className="flex items-center gap-2 mt-auto">
                 <Link
-                    href={`/editor/${automation.id}`}
+                    href={`/automations/${automation.id}`}
                     className="flex-1 flex items-center justify-center gap-2 py-2 bg-zinc-50 hover:bg-zinc-100 text-zinc-700 font-medium rounded-lg text-sm border border-zinc-100 transition-colors"
                 >
                     <Edit size={14} />

@@ -122,7 +122,8 @@ export default function CreateAutomationPage() {
             });
 
             if (res.ok) {
-                router.push('/automations');
+                const data = await res.json();
+                router.push(`/automations/${data.id}`);
             } else {
                 const err = await res.json();
                 alert(`Erro: ${err.error}`);

@@ -16,11 +16,7 @@ export async function GET(request: NextRequest) {
 
     let query = supabase
         .from('automations')
-        .select(`
-            *,
-            automation_triggers (*),
-            automation_actions (*)
-        `)
+        .select('*')
         .eq('user_id', user.id)
         .order('updated_at', { ascending: false });
 

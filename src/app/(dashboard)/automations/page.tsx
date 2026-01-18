@@ -17,6 +17,7 @@ export default function AutomationsPage() {
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
     const [isConnected, setIsConnected] = useState<boolean | null>(null);
+    const [fetchError, setFetchError] = useState(false);
 
     // Modal State
     const [isFolderModalOpen, setIsFolderModalOpen] = useState(false);
@@ -83,6 +84,7 @@ export default function AutomationsPage() {
             }
         } catch (error) {
             console.error(error);
+            setFetchError(true);
         } finally {
             setLoading(false);
         }
@@ -143,6 +145,7 @@ export default function AutomationsPage() {
     if (!isConnected) {
         return (
             <div className="p-8 max-w-7xl mx-auto min-h-screen flex flex-col items-center justify-center text-center">
+                {/* ... (existing connect UI) ... */}
                 <div className="bg-zinc-900 border border-zinc-800 p-8 rounded-2xl max-w-md w-full shadow-2xl">
                     <div className="w-16 h-16 bg-brand-500/10 rounded-full flex items-center justify-center mx-auto mb-6">
                         <Instagram className="w-8 h-8 text-brand-500" />
@@ -164,6 +167,24 @@ export default function AutomationsPage() {
                 </div>
             </div>
         );
+    }
+
+    if (fetchError) {
+        return (
+            <div className="p-8 max-w-7xl mx-auto min-h-screen flex flex-col items-center justify-center text-center">
+                <div className="text-red-500 mb-4 font-bold text-xl">Erro ao carregar automações</div>
+                <p className="text-zinc-400 mb-4">
+                    Pode haver um problema com o banco de dados (tabelas ausentes?).
+                    <br />Verifique se as migrações foram aplicadas.
+                </p>
+                <button
+                    onClick={() => { setFetchError(false); fetchAutomations(); }}
+                    className="px-4 py-2 bg-zinc-800 text-white rounded hover:bg-zinc-700"
+                >
+                    Tentar Novamente
+                </button>
+            </div>
+        )
     }
 
     return (

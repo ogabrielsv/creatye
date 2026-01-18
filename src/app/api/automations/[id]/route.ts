@@ -1,3 +1,4 @@
+
 import { createClient } from '@/lib/supabase/server';
 import { NextRequest, NextResponse } from 'next/server';
 
@@ -6,62 +7,38 @@ export async function GET(
     { params }: { params: { id: string } }
 ) {
     const supabase = await createClient();
-
-    // Check auth
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const { data, error } = await supabase
+    if (!user) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { id } = params;
+
+    // Fetch Automation Metadata
+    const { data: automation, error } = await supabase
         .from('automations')
         .select('*')
-        .eq('id', params.id)
+        .eq('id', id)
+        .eq('user_id', user.id)
         .single();
 
-    if (error) {
-        return NextResponse.json({ error: error.message }, { status: 404 });
+    if (error || !automation) {
+        return NextResponse.json({ error: 'Automation not found' }, { status: 404 });
     }
 
-    return NextResponse.json(data);
-}
+    // Fetch Latest Draft
+    const { data: draft } = await supabase
+        .from('automation_drafts')
+        .select('nodes, edges')
+        .eq('automation_id', id)
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-export async function PATCH(
-    request: NextRequest,
-    { params }: { params: { id: string } }
-) {
-    const supabase = await createClient();
-    const json = await request.json();
-
-    // Only allow updating specific fields
-    const updates: any = {};
-    if (json.name) updates.name = json.name;
-
-    if (json.status) {
-        updates.status = json.status;
-        if (json.status === 'published') {
-            updates.published_at = new Date().toISOString();
-        } else if (json.status === 'draft') {
-            updates.published_at = null;
-        }
-    }
-
-    if (json.folder_id !== undefined) {
-        updates.folder_id = json.folder_id;
-    }
-
-    if (Object.keys(updates).length === 0) {
-        return NextResponse.json({ error: 'No fields to update' }, { status: 400 });
-    }
-
-    const { data, error } = await supabase
-        .from('automations')
-        .update(updates)
-        .eq('id', params.id)
-        .select()
-        .single();
-
-    if (error) {
-        return NextResponse.json({ error: error.message }, { status: 500 });
-    }
-
-    return NextResponse.json(data);
+    return NextResponse.json({
+        ...automation,
+        nodes: draft?.nodes || [],
+        edges: draft?.edges || []
+    });
 }
