@@ -123,7 +123,29 @@ export async function POST(request: NextRequest) {
 
         if (draftError) {
             console.error("Error creating draft details:", draftError);
-            // Non-fatal? Maybe, but UI expects it.
+        }
+
+        // Process Trigger Config if present
+        if (json.trigger_config && json.trigger_config.keywords && json.trigger_config.keywords.length > 0) {
+            const keywords = json.trigger_config.keywords;
+            const matchMode = json.trigger_config.matchType === 'exact' ? 'exact' : 'contains';
+
+            const triggersToInsert = keywords.map((kw: string) => ({
+                automation_id: automation.id,
+                user_id: user.id,
+                kind: 'keyword',
+                keyword_text: kw,
+                match_mode: matchMode,
+                case_insensitive: true
+            }));
+
+            const { error: trigError } = await supabase
+                .from('automation_triggers')
+                .insert(triggersToInsert);
+
+            if (trigError) {
+                console.error("Error creating triggers:", trigError);
+            }
         }
 
         return NextResponse.json(automation);
