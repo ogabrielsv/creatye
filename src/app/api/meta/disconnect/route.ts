@@ -10,11 +10,14 @@ export async function POST(request: NextRequest) {
     }
 
     try {
-        // Disconnect by deleting the record. 
-        // This relies on RLS ensuring user can only delete their own.
+        // Soft disconnect
         const { error } = await supabase
             .from('ig_connections')
-            .delete()
+            .update({
+                disconnected_at: new Date().toISOString(),
+                access_token: null,
+                token_expires_at: null
+            })
             .eq('user_id', user.id);
 
         if (error) {

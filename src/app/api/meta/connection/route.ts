@@ -19,14 +19,18 @@ export async function GET(request: NextRequest) {
         return NextResponse.json({ connected: false });
     }
 
+    // Check if logically connected (has token and not disconnected)
+    const isConnected = !!data.access_token && !data.disconnected_at;
+
+    if (!isConnected) {
+        return NextResponse.json({ connected: false });
+    }
+
     return NextResponse.json({
         connected: true,
-        // Map fields explicitly if needed, or return raw data
-        ig_username: data.ig_username || data.username,
+        ig_username: data.ig_username,
         ig_name: data.ig_name,
         ig_profile_picture_url: data.ig_profile_picture_url,
-        page_id: data.page_id, // Might be null for Creator/Business accounts direct login
-        ig_business_account_id: data.ig_business_account_id,
         connected_at: data.connected_at
     });
 }
