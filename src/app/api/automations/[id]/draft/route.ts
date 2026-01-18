@@ -5,7 +5,7 @@ export async function POST(
     request: NextRequest,
     { params }: { params: { id: string } }
 ) {
-    const supabase = createClient();
+    const supabase = await createClient();
     const json = await request.json();
     const { nodes, edges, triggers } = json;
 
@@ -55,7 +55,7 @@ export async function GET(
     request: NextRequest,
     { params }: { params: { id: string } }
 ) {
-    const supabase = createClient();
+    const supabase = await createClient();
 
     // Get Draft
     const { data: draft, error } = await supabase

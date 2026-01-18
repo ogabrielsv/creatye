@@ -18,7 +18,7 @@ export async function GET(request: Request) {
         return NextResponse.redirect(new URL('/automations?error=no_code', request.url))
     }
 
-    const supabase = createClient()
+    const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
 
     if (!user) {

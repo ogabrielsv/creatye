@@ -5,7 +5,7 @@ export async function POST(
     request: NextRequest,
     { params }: { params: { id: string } }
 ) {
-    const supabase = createClient();
+    const supabase = await createClient();
 
     // 1. Get current draft
     const { data: draft, error: draftError } = await supabase

@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 // This endpoint would normally be called by a cron job or a recursive fetch
 export async function POST(req: NextRequest) {
-    const supabase = createClient();
+    const supabase = await createClient();
 
     // 1. Fetch queued jobs ready to run
     const { data: jobs, error } = await supabase

@@ -2,7 +2,7 @@ import { createClient } from '@/lib/supabase/server';
 import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(req: NextRequest) {
-    const supabase = createClient();
+    const supabase = await createClient();
     const { automationId, contactId } = await req.json();
 
     if (!automationId || !contactId) {
