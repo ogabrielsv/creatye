@@ -23,6 +23,8 @@ const menuItems = [
 
 import { ModeToggle } from './ThemeToggle';
 
+import { InstagramConnectionStatus } from './InstagramConnectionStatus';
+
 export function Sidebar() {
     const pathname = usePathname();
 
@@ -40,6 +42,8 @@ export function Sidebar() {
                 {/* Theme Toggle in Header */}
                 <ModeToggle />
             </div>
+
+            <InstagramConnectionStatus />
 
             <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
                 {menuItems.map((item) => {

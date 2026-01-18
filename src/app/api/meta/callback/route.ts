@@ -95,6 +95,7 @@ export async function GET(request: Request) {
 
         const finalIgUserId = userDetails.user_id || userDetails.id || igUserId
         const finalIgUsername = userDetails.username
+        const finalIgProfilePic = userDetails.profile_picture_url
 
         // 4. Save to Supabase
         // We do NOT use page_id or page_access_token here as this is direct IG login.
@@ -103,7 +104,12 @@ export async function GET(request: Request) {
             user_id: user.id,
             access_token: longLivedToken, // Corresponds to userAccessToken in instructions
             token_expires_at: expiresAt,
-            updated_at: new Date().toISOString()
+            updated_at: new Date().toISOString(),
+            // New fields
+            username: finalIgUsername, // backward compatibility helper if column exists or mapped
+            ig_username: finalIgUsername,
+            ig_profile_picture_url: finalIgProfilePic,
+            ig_user_id: finalIgUserId, // often useful to have explicit
         }
 
         if (finalIgUserId) {
