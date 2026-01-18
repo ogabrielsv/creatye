@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Automation, Folder as FolderType } from '@/../creatye-core/automation/types';
 import { AutomationList } from '@/components/automations/AutomationList';
-import { Plus, Search, Folder, MoreHorizontal, Trash2 } from 'lucide-react';
+import { Plus, Search, Folder, MoreHorizontal, Trash2, Instagram } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
 type FilterStatus = 'all' | 'published' | 'draft';
@@ -168,10 +168,14 @@ export default function AutomationsPage() {
                         Para acessar suas automações, você precisa conectar uma conta do Instagram Business.
                     </p>
                     <button
-                        onClick={() => router.push('/settings')}
-                        className="w-full py-3 bg-brand-500 hover:bg-brand-400 text-zinc-950 font-bold rounded-xl transition-all"
+                        onClick={() => window.location.href = '/api/meta/connect'}
+                        className="w-full py-3 text-white font-bold rounded-xl transition-all flex items-center justify-center gap-2 hover:opacity-90 shadow-lg"
+                        style={{
+                            background: 'linear-gradient(45deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%)'
+                        }}
                     >
-                        Ir para Configurações
+                        <Instagram className="w-5 h-5" />
+                        Conectar com Instagram
                     </button>
                 </div>
             </div>
