@@ -115,7 +115,8 @@ export async function GET(request: Request) {
 
         if (dbError) {
             console.error('Database Error:', dbError)
-            throw new Error('Failed to save connection.')
+            const details = [dbError.code, dbError.message, dbError.details, dbError.hint].filter(Boolean).join(' | ')
+            throw new Error(`DB_UPSERT_ERROR: ${details}`)
         }
 
         return NextResponse.redirect(new URL('/automations?connected=true', request.url))
