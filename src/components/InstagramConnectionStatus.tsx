@@ -20,6 +20,7 @@ export function InstagramConnectionStatus() {
     const [data, setData] = useState<ConnectionData | null>(null);
     const [isDisconnecting, setIsDisconnecting] = useState(false);
     const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
+    const [imgError, setImgError] = useState(false);
 
     const fetchConnection = async () => {
         try {
@@ -66,22 +67,24 @@ export function InstagramConnectionStatus() {
     }
 
     if (data?.connected) {
+        const profilePic = data.ig_profile_picture_url;
+        const fallbackInitial = (data.ig_username || '?').charAt(0).toUpperCase();
+
         return (
             <div className="px-4 py-3 border-b border-border/50">
                 <div className="bg-zinc-50 dark:bg-zinc-900/50 rounded-lg border border-border p-3">
                     <div className="flex items-center gap-3 mb-2">
-                        <div className="relative w-10 h-10 rounded-full overflow-hidden border border-border bg-zinc-200 shrink-0">
-                            {data?.ig_profile_picture_url ? (
+                        <div className="relative w-10 h-10 rounded-full overflow-hidden border border-border bg-zinc-200 shrink-0 flex items-center justify-center text-zinc-500 font-bold">
+                            {profilePic && !imgError ? (
                                 <Image
-                                    src={data.ig_profile_picture_url}
+                                    src={profilePic}
                                     alt={data.ig_username || 'Instagram'}
                                     fill
                                     className="object-cover"
+                                    onError={() => setImgError(true)}
                                 />
                             ) : (
-                                <div className="w-full h-full flex items-center justify-center text-zinc-500">
-                                    <Instagram className="w-5 h-5" />
-                                </div>
+                                <span>{fallbackInitial}</span>
                             )}
                         </div>
                         <div className="flex-1 min-w-0">
