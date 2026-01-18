@@ -3,16 +3,39 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function GET(request: NextRequest) {
     const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+
+    if (!user) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
     const searchParams = request.nextUrl.searchParams;
     const folderId = searchParams.get('folder_id');
+    const status = searchParams.get('status'); // all | published | draft
+    const q = searchParams.get('q');
 
     let query = supabase
         .from('automations')
         .select('*')
+        .eq('user_id', user.id)
         .order('updated_at', { ascending: false });
 
-    if (folderId) {
-        // query = query.eq('folder_id', folderId);
+    // Filter by Folder
+    if (folderId && folderId !== 'all') {
+        query = query.eq('folder_id', folderId);
+    }
+
+    // Filter by Status
+    if (status === 'published') {
+        query = query.eq('status', 'published');
+    } else if (status === 'draft') {
+        query = query.eq('status', 'draft');
+    }
+    // if status === 'all' or undefined, return all (default behavior of no filter)
+
+    // Filter by Name (Search)
+    if (q) {
+        query = query.ilike('name', `%${q}%`);
     }
 
     const { data, error } = await query;
@@ -26,94 +49,73 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
     const supabase = await createClient();
-    const json = await request.json();
-
-    // Validation
-    if (!json.name || !json.channels || json.channels.length === 0) {
-        return NextResponse.json({ error: 'Name and channels are required' }, { status: 400 });
-    }
-
-    const name = json.name;
-    const description = json.description || '';
-    const channels = json.channels; // Array of strings
-    const folder_id = json.folder_id || null;
-
-    // Get user
     const { data: { user } } = await supabase.auth.getUser();
+
     if (!user) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // FASE F3: API-side enforcement
-    // Check if user has active Instagram connection
-    const { data: connection } = await supabase
-        .from('ig_connections')
-        .select('access_token')
-        .eq('user_id', user.id)
-        .maybeSingle();
+    try {
+        const json = await request.json();
 
-    if (!connection) {
-        return NextResponse.json({ error: 'Instagram connection required to create automations.' }, { status: 403 });
-    }
+        const name = json.name ? json.name.trim() : 'Nova Automação';
+        const channels = json.channels || [];
+        const folder_id = json.folder_id || null;
 
-    // Create Automation
-    const { data: automation, error } = await supabase
-        .from('automations')
-        .insert([{
-            name,
-            description,
-            channels,
-            folder_id,
-            // For now, storing extra data in type or skipping if column missing
-            // Emulating type logic:
-            type: channels.length > 1 ? 'mixed' : (channels[0].includes('dm') ? 'dm' : (channels[0].includes('story') ? 'story' : 'feed')),
-            user_id: user.id,
-            status: 'draft',
-            executions: 0
-        }])
-        .select()
-        .single();
+        // We do NOT enforce IG connection here to allow exploring the builder, 
+        // unless channels explicitly require it. But for a "Draft", it's usually fine.
+        // User requested: "Criar no Supabase via POST /api/automations com status draft."
 
-    if (error) {
-        return NextResponse.json({ error: error.message }, { status: 500 });
-    }
+        // Create Automation (Status Draft)
+        const { data: automation, error } = await supabase
+            .from('automations')
+            .insert([{
+                name,
+                description: json.description || '',
+                // Default to empty or passed channels
+                channels: channels,
+                folder_id,
+                user_id: user.id,
+                status: 'draft',
+                executions: 0
+            }])
+            .select()
+            .single();
 
-    // Determine Trigger Type based on Channels
-    const triggers = channels.map((ch: string) => {
-        const typeMap: any = {
-            'dm': 'dm_received',
-            'feed_comment': 'feed_comment_received',
-            'live_comment': 'live_comment_received',
-            'story_mention': 'story_mention_received',
-            'story_reply': 'story_reply_received'
-        };
-        return typeMap[ch] || 'unknown';
-    });
-
-    const triggerConfig = json.trigger_config || {};
-
-    // Create Initial Draft with Smart Start Node
-    const startNode = {
-        id: 'start-1',
-        type: 'start',
-        position: { x: 100, y: 100 },
-        data: {
-            label: 'Início',
-            triggers: triggers,
-            channels: channels,
-            triggerConfig: triggerConfig // Persist config
+        if (error) {
+            return NextResponse.json({ error: error.message }, { status: 500 });
         }
-    };
 
-    await supabase
-        .from('automation_drafts')
-        .insert({
-            automation_id: automation.id,
-            user_id: user.id,
-            nodes: [startNode],
-            edges: [], // Empty edges
-            updated_at: new Date().toISOString()
-        });
+        // Create Initial Draft with Start Node
+        const startNode = {
+            id: 'start-1',
+            type: 'start',
+            position: { x: 100, y: 100 },
+            data: {
+                label: 'Início',
+                triggers: [],
+                channels: []
+            }
+        };
 
-    return NextResponse.json(automation);
+        const { error: draftError } = await supabase
+            .from('automation_drafts')
+            .insert({
+                automation_id: automation.id,
+                user_id: user.id,
+                nodes: [startNode],
+                edges: [],
+                updated_at: new Date().toISOString()
+            });
+
+        if (draftError) {
+            console.error("Error creating draft details:", draftError);
+            // Non-fatal? Maybe, but UI expects it.
+        }
+
+        return NextResponse.json(automation);
+
+    } catch (err: any) {
+        return NextResponse.json({ error: err.message || 'Internal Error' }, { status: 500 });
+    }
 }

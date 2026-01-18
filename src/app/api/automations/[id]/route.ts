@@ -34,8 +34,19 @@ export async function PATCH(
     // Only allow updating specific fields
     const updates: any = {};
     if (json.name) updates.name = json.name;
-    if (json.status) updates.status = json.status;
-    if (json.folder_id) updates.folder_id = json.folder_id;
+
+    if (json.status) {
+        updates.status = json.status;
+        if (json.status === 'published') {
+            updates.published_at = new Date().toISOString();
+        } else if (json.status === 'draft') {
+            updates.published_at = null;
+        }
+    }
+
+    if (json.folder_id !== undefined) {
+        updates.folder_id = json.folder_id;
+    }
 
     if (Object.keys(updates).length === 0) {
         return NextResponse.json({ error: 'No fields to update' }, { status: 400 });
