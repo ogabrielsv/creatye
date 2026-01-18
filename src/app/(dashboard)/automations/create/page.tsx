@@ -31,51 +31,19 @@ export default function CreateAutomationPage() {
     // Folders State
     const [folders, setFolders] = useState<{ id: string | null, name: string }[]>([{ id: null, name: 'Raiz (Sem Pasta)' }]);
     const [folderId, setFolderId] = useState<string | null>(null);
+    const [actionMessage, setActionMessage] = useState('');
 
-    useEffect(() => {
-        // Fetch folders
-        fetch('/api/folders')
-            .then(res => res.json())
-            .then(data => {
-                if (Array.isArray(data)) {
-                    setFolders([{ id: null, name: 'Raiz (Sem Pasta)' }, ...data]);
-                }
-            })
-            .catch(console.error);
-    }, []);
-
-    const handleChannelToggle = (channelId: string) => {
-        setSelectedChannels(prev =>
-            prev.includes(channelId)
-                ? prev.filter(c => c !== channelId)
-                : [...prev, channelId]
-        );
-    };
-
-    const addKeyword = () => {
-        if (keywordInput.trim() && !triggerConfig.keywords.includes(keywordInput.trim())) {
-            setTriggerConfig(prev => ({
-                ...prev,
-                keywords: [...prev.keywords, keywordInput.trim()]
-            }));
-            setKeywordInput('');
-        }
-    };
-
-    const removeKeyword = (kw: string) => {
-        setTriggerConfig(prev => ({
-            ...prev,
-            keywords: prev.keywords.filter(k => k !== kw)
-        }));
-    };
-
-    const handleCreate = async () => {
+    const handleCreate = async (status: 'draft' | 'published' = 'draft') => {
         if (!name.trim()) {
             alert('O título é obrigatório.');
             return;
         }
         if (selectedChannels.length === 0) {
             alert('Selecione pelo menos um canal de funcionamento.');
+            return;
+        }
+        if (status === 'published' && !actionMessage.trim()) {
+            alert('Para publicar, a mensagem de resposta é obrigatória.');
             return;
         }
 
@@ -87,15 +55,19 @@ export default function CreateAutomationPage() {
                     name,
                     description,
                     folder_id: folderId,
-                    channels: selectedChannels, // Pass channels to API to initialize triggers
-                    trigger_config: triggerConfig
+                    channels: selectedChannels,
+                    trigger_config: triggerConfig,
+                    action_config: {
+                        message: actionMessage
+                    },
+                    status: status
                 }),
                 headers: { 'Content-Type': 'application/json' }
             });
 
             if (res.ok) {
-                const data = await res.json();
-                router.push(`/editor/${data.id}`);
+                // Return to list instead of editor
+                router.push('/automations');
             } else {
                 const err = await res.json();
                 alert(`Erro: ${err.error}`);
@@ -278,19 +250,40 @@ export default function CreateAutomationPage() {
                         </div>
                     )}
 
+                    {/* Action Config */}
+                    <div className="mb-8">
+                        <label className="block text-sm font-semibold text-zinc-900 mb-2">
+                            Mensagem de Resposta
+                        </label>
+                        <textarea
+                            placeholder="Digite a mensagem que será enviada..."
+                            value={actionMessage}
+                            onChange={e => setActionMessage(e.target.value)}
+                            className="w-full h-32 px-4 py-3 bg-zinc-50 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-zinc-900 placeholder:text-zinc-400 resize-none"
+                        />
+                    </div>
+
                     {/* Actions */}
                     <div className="flex gap-3 pt-6 border-t border-zinc-100">
                         <button
-                            onClick={handleCreate}
+                            onClick={() => handleCreate('draft')}
+                            disabled={loading}
+                            className={`px-6 py-2.5 bg-white border border-zinc-300 text-zinc-700 font-medium rounded-lg hover:bg-zinc-50 transition-all ${loading ? 'opacity-70 cursor-not-allowed' : ''
+                                }`}
+                        >
+                            Salvar como Rascunho
+                        </button>
+                        <button
+                            onClick={() => handleCreate('published')}
                             disabled={loading}
                             className={`px-6 py-2.5 bg-blue-600 text-white font-medium rounded-lg shadow-sm shadow-blue-600/20 transition-all ${loading ? 'opacity-70 cursor-not-allowed' : 'hover:bg-blue-700'
                                 }`}
                         >
-                            {loading ? 'Criando...' : 'Criar automação'}
+                            {loading ? 'Salvando...' : 'Publicar'}
                         </button>
                         <button
                             onClick={() => router.back()}
-                            className="px-6 py-2.5 bg-white border border-zinc-200 text-zinc-700 font-medium rounded-lg hover:bg-zinc-50 transition-colors"
+                            className="px-6 py-2.5 text-zinc-500 font-medium rounded-lg hover:text-zinc-700 transition-colors ml-auto"
                         >
                             Cancelar
                         </button>

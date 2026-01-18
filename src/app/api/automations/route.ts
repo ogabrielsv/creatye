@@ -16,7 +16,11 @@ export async function GET(request: NextRequest) {
 
     let query = supabase
         .from('automations')
-        .select('*')
+        .select(`
+            *,
+            automation_triggers (*),
+            automation_actions (*)
+        `)
         .eq('user_id', user.id)
         .order('updated_at', { ascending: false });
 
@@ -134,7 +138,7 @@ export async function POST(request: NextRequest) {
                 automation_id: automation.id,
                 user_id: user.id,
                 kind: 'keyword',
-                keyword_text: kw,
+                keyword: kw, // Changed from keyword_text
                 match_mode: matchMode,
                 case_insensitive: true
             }));
@@ -145,6 +149,22 @@ export async function POST(request: NextRequest) {
 
             if (trigError) {
                 console.error("Error creating triggers:", trigError);
+            }
+        }
+
+        // Process Action Config if present
+        if (json.action_config && json.action_config.message) {
+            const { error: actError } = await supabase
+                .from('automation_actions')
+                .insert({
+                    automation_id: automation.id,
+                    user_id: user.id,
+                    kind: 'send_dm',
+                    message_text: json.action_config.message
+                });
+
+            if (actError) {
+                console.error("Error creating action:", actError);
             }
         }
 
