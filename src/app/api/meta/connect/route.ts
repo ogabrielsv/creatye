@@ -32,11 +32,10 @@ export async function GET(request: Request) {
 
     // Define scopes required for Instagram Automation
     const scopes = [
-        'instagram_business_basic',
+        'instagram_basic',
         'instagram_manage_comments',
-        'instagram_business_manage_messages',
+        'instagram_manage_messages',
         'pages_show_list',
-        'pages_read_engagement'
     ].join(',')
 
     const authUrl = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${APP_ID}&redirect_uri=${REDIRECT_URI}&response_type=code&scope=${scopes}&state=${state}`
