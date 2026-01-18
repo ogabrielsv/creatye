@@ -66,17 +66,30 @@ export async function POST(request: NextRequest) {
         // unless channels explicitly require it. But for a "Draft", it's usually fine.
         // User requested: "Criar no Supabase via POST /api/automations com status draft."
 
+        // Determine type from channels
+        let type = 'dm';
+        if (channels && channels.length > 0) {
+            const ch = channels[0];
+            if (channels.length > 1) type = 'mixed';
+            else if (ch === 'dm') type = 'dm';
+            else if (ch === 'feed_comment') type = 'comment';
+            else if (ch === 'live_comment') type = 'live_comment';
+            else if (ch === 'story_mention') type = 'story_mention';
+            else if (ch === 'story_reply') type = 'story_reply';
+            else type = 'dm'; // fallback
+        }
+
         // Create Automation (Status Draft)
         const { data: automation, error } = await supabase
             .from('automations')
             .insert([{
                 name,
                 description: json.description || '',
-                // Default to empty or passed channels
                 channels: channels,
                 folder_id,
                 user_id: user.id,
                 status: 'draft',
+                type: type, // Explicitly set type
                 executions: 0
             }])
             .select()

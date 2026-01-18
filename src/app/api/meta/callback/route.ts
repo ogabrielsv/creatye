@@ -96,6 +96,7 @@ export async function GET(request: Request) {
         const finalIgUserId = userDetails.user_id || userDetails.id || igUserId
         const finalIgUsername = userDetails.username
         const finalIgProfilePic = userDetails.profile_picture_url
+        const finalIgName = userDetails.name || finalIgUsername // Fallback to username if name is missing
 
         // 4. Save to Supabase
         // We do NOT use page_id or page_access_token here as this is direct IG login.
@@ -105,18 +106,19 @@ export async function GET(request: Request) {
             access_token: longLivedToken, // Corresponds to userAccessToken in instructions
             token_expires_at: expiresAt,
             updated_at: new Date().toISOString(),
+            connected_at: new Date().toISOString(),
             // New fields
             username: finalIgUsername, // backward compatibility helper if column exists or mapped
             ig_username: finalIgUsername,
+            ig_name: finalIgName,
             ig_profile_picture_url: finalIgProfilePic,
             ig_user_id: finalIgUserId, // often useful to have explicit
+            page_id: null // Ensure this is explicitly null if not applicable
         }
 
         if (finalIgUserId) {
             payload.ig_business_account_id = finalIgUserId
         }
-
-        // page_id is effectively null/undefined in this flow, so we don't include it.
 
         const { error: dbError } = await supabase
             .from('ig_connections')
