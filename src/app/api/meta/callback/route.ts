@@ -99,19 +99,19 @@ export async function GET(request: Request) {
         // 4. Save to Supabase
         // We do NOT use page_id or page_access_token here as this is direct IG login.
 
-        const { error: dbError } = await supabase.from('ig_connections').upsert({
-            user_id: user.id,
-            provider: 'instagram',
-            access_token: longLivedToken, // Main token
-            user_access_token: longLivedToken,
-            page_access_token: null, // Not applicable
-            token_expires_at: expiresAt,
-            page_id: null, // Not applicable
-            ig_user_id: finalIgUserId,
-            username: finalIgUsername,
-            ig_username: finalIgUsername,
-            updated_at: new Date().toISOString()
-        })
+        const { error: dbError } = await supabase
+            .from('ig_connections')
+            .upsert(
+                {
+                    user_id: user.id,
+                    page_id: null, // User requested page_id (even if null)
+                    ig_business_account_id: finalIgUserId, // User requested ig_business_account_id to match igUserId/finalIgUserId
+                    access_token: longLivedToken,
+                    token_expires_at: expiresAt,
+                    updated_at: new Date().toISOString()
+                },
+                { onConflict: 'user_id' }
+            )
 
         if (dbError) {
             console.error('Database Error:', dbError)
