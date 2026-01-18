@@ -45,16 +45,20 @@ export async function GET(request: Request) {
         }
 
         // 1. Exchange Code for Short-Lived Access Token (Instagram API)
-        const formData = new FormData()
-        formData.append('client_id', INSTAGRAM_APP_ID)
-        formData.append('client_secret', INSTAGRAM_APP_SECRET)
-        formData.append('grant_type', 'authorization_code')
-        formData.append('redirect_uri', REDIRECT_URI)
-        formData.append('code', code)
+        // 1. Exchange Code for Short-Lived Access Token (Instagram API)
+        const params = new URLSearchParams()
+        params.append('client_id', INSTAGRAM_APP_ID)
+        params.append('client_secret', INSTAGRAM_APP_SECRET)
+        params.append('grant_type', 'authorization_code')
+        params.append('redirect_uri', REDIRECT_URI)
+        params.append('code', code)
 
         const tokenRes = await fetch('https://api.instagram.com/oauth/access_token', {
             method: 'POST',
-            body: formData,
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: params.toString(),
         })
         const tokenData = await tokenRes.json()
 

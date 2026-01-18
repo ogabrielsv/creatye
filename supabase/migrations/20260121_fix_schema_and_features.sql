@@ -66,3 +66,6 @@ CREATE POLICY "Users can manage their own connections" ON public.ig_connections 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_automations_status ON public.automations(status);
 CREATE INDEX IF NOT EXISTS idx_automations_folder_id ON public.automations(folder_id);
+
+-- Notify PostgREST to reload schema cache
+NOTIFY pgrst, 'reload schema';
