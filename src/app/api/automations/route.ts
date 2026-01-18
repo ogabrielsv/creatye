@@ -83,17 +83,21 @@ export async function POST(request: NextRequest) {
             else type = 'dm'; // fallback
         }
 
-        // Create Automation (Status Draft)
+        const status = json.status === 'published' ? 'published' : 'draft';
+        const published_at = status === 'published' ? new Date().toISOString() : null;
+
+        // Create Automation
         const { data: automation, error } = await supabase
             .from('automations')
             .insert([{
                 name,
                 description: json.description || '',
-                channels: channels,
+                channels: channels, // Now we have a column for this
                 folder_id,
                 user_id: user.id,
-                status: 'draft',
-                type: type, // Explicitly set type
+                status: status,
+                published_at: published_at,
+                type: type,
                 executions: 0
             }])
             .select()

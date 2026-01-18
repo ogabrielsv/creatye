@@ -3,14 +3,33 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Check, Folder, X } from 'lucide-react';
-import { CHANNELS, CHANNEL_LIST } from '@/../creatye-core/automation/channels';
-import { MATCH_TYPES, POST_OPTIONS, MatchTypeId } from '@/../creatye-core/automation/triggers';
 import Link from 'next/link';
+
+// Local definitions to ensure stability
+const CHANNEL_LIST = ['dm', 'comment_feed', 'comment_live', 'story_mention', 'story_reply'];
+const CHANNELS: Record<string, { label: string }> = {
+    dm: { label: 'Mensagem Direta' },
+    comment_feed: { label: 'Comentário no Feed' },
+    comment_live: { label: 'Comentário em Live' },
+    story_mention: { label: 'Menção à Story' },
+    story_reply: { label: 'Resposta à Story' }
+};
+
+const MATCH_TYPES = {
+    contains: 'Contém a palavra',
+    exact: 'É igual a palavra',
+    starts_with: 'Começa com'
+};
+
+const POST_OPTIONS = {
+    any_post: 'Qualquer publicação',
+    specific_post: 'Publicação específica'
+};
 
 interface TriggerConfig {
     keywords: string[];
-    matchType: MatchTypeId;
-    postOption: keyof typeof POST_OPTIONS;
+    matchType: 'contains' | 'exact' | 'starts_with';
+    postOption: 'any_post' | 'specific_post';
 }
 
 export default function CreateAutomationPage() {
@@ -32,6 +51,43 @@ export default function CreateAutomationPage() {
     const [folders, setFolders] = useState<{ id: string | null, name: string }[]>([{ id: null, name: 'Raiz (Sem Pasta)' }]);
     const [folderId, setFolderId] = useState<string | null>(null);
     const [actionMessage, setActionMessage] = useState('');
+
+    useEffect(() => {
+        // Fetch folders
+        fetch('/api/folders')
+            .then(res => res.json())
+            .then(data => {
+                if (Array.isArray(data)) {
+                    setFolders([{ id: null, name: 'Raiz (Sem Pasta)' }, ...data]);
+                }
+            })
+            .catch(console.error);
+    }, []);
+
+    const handleChannelToggle = (channelId: string) => {
+        setSelectedChannels(prev =>
+            prev.includes(channelId)
+                ? prev.filter(c => c !== channelId)
+                : [...prev, channelId]
+        );
+    };
+
+    const addKeyword = () => {
+        if (keywordInput.trim() && !triggerConfig.keywords.includes(keywordInput.trim())) {
+            setTriggerConfig(prev => ({
+                ...prev,
+                keywords: [...prev.keywords, keywordInput.trim()]
+            }));
+            setKeywordInput('');
+        }
+    };
+
+    const removeKeyword = (kw: string) => {
+        setTriggerConfig(prev => ({
+            ...prev,
+            keywords: prev.keywords.filter(k => k !== kw)
+        }));
+    };
 
     const handleCreate = async (status: 'draft' | 'published' = 'draft') => {
         if (!name.trim()) {
@@ -66,7 +122,6 @@ export default function CreateAutomationPage() {
             });
 
             if (res.ok) {
-                // Return to list instead of editor
                 router.push('/automations');
             } else {
                 const err = await res.json();
@@ -80,11 +135,11 @@ export default function CreateAutomationPage() {
         }
     };
 
-    // Helper to determine if we show Keyword Config
-    const showKeywordConfig = selectedChannels.some(c => ['dm', 'feed_comment', 'live_comment', 'story_reply'].includes(c));
+    // Show keyword config for relevant channels
+    const showKeywordConfig = selectedChannels.some(c => ['dm', 'comment_feed', 'comment_live', 'story_reply'].includes(c));
 
-    // Helper to determine if we show Post Config
-    const showPostConfig = selectedChannels.some(c => ['feed_comment', 'live_comment'].includes(c));
+    // Show post config for feed/live comments
+    const showPostConfig = selectedChannels.some(c => ['comment_feed', 'comment_live'].includes(c));
 
     return (
         <div className="min-h-screen bg-zinc-50 flex flex-col">
@@ -161,8 +216,10 @@ export default function CreateAutomationPage() {
                             {CHANNEL_LIST.map(cid => {
                                 const isSelected = selectedChannels.includes(cid);
                                 return (
-                                    <label
+                                    <button
                                         key={cid}
+                                        type="button"
+                                        onClick={() => handleChannelToggle(cid)}
                                         className={`flex items-center gap-3 px-4 py-3 rounded-lg border cursor-pointer transition-all select-none ${isSelected
                                             ? 'bg-blue-50 border-blue-200 text-blue-700'
                                             : 'bg-white border-zinc-200 text-zinc-600 hover:border-zinc-300'
@@ -172,30 +229,59 @@ export default function CreateAutomationPage() {
                                             }`}>
                                             {isSelected && <Check size={12} className="text-white" />}
                                         </div>
-                                        <input
-                                            type="checkbox"
-                                            className="hidden"
-                                            checked={isSelected}
-                                            onChange={() => handleChannelToggle(cid)}
-                                        />
                                         <span className="text-sm font-medium">{CHANNELS[cid].label}</span>
-                                    </label>
+                                    </button>
                                 );
                             })}
                         </div>
                     </div>
 
-                    {/* Dynamic Configuration Sections */}
+                    {/* Keywords Config */}
+                    {showKeywordConfig && (
+                        <div className="mb-10 animation-fade-in">
+                            <label className="block text-sm font-semibold text-zinc-900 mb-1">
+                                Quais palavras-chave ativarão essa automação?
+                            </label>
+                            <div className="flex flex-col md:flex-row gap-4 mt-3">
+                                <div className="w-48 flex-shrink-0">
+                                    <select
+                                        value={triggerConfig.matchType}
+                                        onChange={(e) => setTriggerConfig({ ...triggerConfig, matchType: e.target.value as any })}
+                                        className="w-full px-4 py-3 bg-zinc-50 border border-zinc-200 rounded-lg text-zinc-900 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                                    >
+                                        {Object.entries(MATCH_TYPES).map(([key, label]) => (
+                                            <option key={key} value={key}>{label}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div className="flex-1 relative">
+                                    <div className="flex flex-wrap gap-2 px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg focus-within:ring-2 focus-within:ring-blue-500/20 focus-within:border-blue-500 min-h-[48px] items-center">
+                                        {triggerConfig.keywords.map(kw => (
+                                            <span key={kw} className="bg-white border border-zinc-200 shadow-sm px-2 py-1 rounded text-sm font-medium flex items-center gap-1 text-zinc-700">
+                                                {kw}
+                                                <button onClick={() => removeKeyword(kw)} className="text-zinc-400 hover:text-red-500"><X size={14} /></button>
+                                            </span>
+                                        ))}
+                                        <input
+                                            type="text"
+                                            value={keywordInput}
+                                            onChange={(e) => setKeywordInput(e.target.value)}
+                                            onKeyDown={(e) => e.key === 'Enter' && addKeyword()}
+                                            placeholder={triggerConfig.keywords.length === 0 ? "Crie uma palavra-chave..." : ""}
+                                            className="flex-1 min-w-[120px] outline-none text-sm bg-transparent text-zinc-900 placeholder:text-zinc-400"
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
-                    {/* Post Selection (Feed/Live) */}
+                    {/* Post Selection */}
                     {showPostConfig && (
                         <div className="mb-8 p-6 bg-zinc-50 rounded-xl border border-zinc-200 animation-fade-in">
                             <label className="block text-sm font-semibold text-zinc-900 mb-1">
                                 Selecione um post
                             </label>
-                            <p className="text-xs text-zinc-500 mb-3">
-                                Você pode escolher se a sua automação será ativada em qualquer publicação ou anúncio, ou somente em uma específica.
-                            </p>
                             <select
                                 value={triggerConfig.postOption}
                                 onChange={(e) => setTriggerConfig({ ...triggerConfig, postOption: e.target.value as any })}
@@ -205,48 +291,6 @@ export default function CreateAutomationPage() {
                                     <option key={key} value={key}>{label}</option>
                                 ))}
                             </select>
-                        </div>
-                    )}
-
-                    {/* Keywords Config (DM/Comments) */}
-                    {showKeywordConfig && (
-                        <div className="mb-10">
-                            <label className="block text-sm font-semibold text-zinc-900 mb-1">
-                                Quais palavras-chave ativarão essa automação?
-                            </label>
-                            <div className="flex flex-col md:flex-row gap-4 mt-3">
-                                <div className="w-48 flex-shrink-0">
-                                    <select
-                                        value={triggerConfig.matchType}
-                                        onChange={(e) => setTriggerConfig({ ...triggerConfig, matchType: e.target.value as MatchTypeId })}
-                                        className="w-full px-4 py-3 bg-zinc-50 border border-zinc-200 rounded-lg text-zinc-900 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                                    >
-                                        {Object.entries(MATCH_TYPES).map(([key, label]) => (
-                                            <option key={key} value={key}>{label}</option>
-                                        ))}
-                                    </select>
-                                </div>
-                                {triggerConfig.matchType !== 'any' && (
-                                    <div className="flex-1 relative">
-                                        <div className="flex flex-wrap gap-2 px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg focus-within:ring-2 focus-within:ring-blue-500/20 focus-within:border-blue-500 min-h-[48px] items-center">
-                                            {triggerConfig.keywords.map(kw => (
-                                                <span key={kw} className="bg-white border border-zinc-200 shadow-sm px-2 py-1 rounded text-sm font-medium flex items-center gap-1 text-zinc-700">
-                                                    {kw}
-                                                    <button onClick={() => removeKeyword(kw)} className="text-zinc-400 hover:text-red-500"><X size={14} /></button>
-                                                </span>
-                                            ))}
-                                            <input
-                                                type="text"
-                                                value={keywordInput}
-                                                onChange={(e) => setKeywordInput(e.target.value)}
-                                                onKeyDown={(e) => e.key === 'Enter' && addKeyword()}
-                                                placeholder={triggerConfig.keywords.length === 0 ? "Crie uma palavra-chave..." : ""}
-                                                className="flex-1 min-w-[120px] outline-none text-sm bg-transparent text-zinc-900 placeholder:text-zinc-400"
-                                            />
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
                         </div>
                     )}
 
