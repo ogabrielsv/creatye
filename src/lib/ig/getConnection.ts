@@ -2,7 +2,7 @@
 import { createClient } from '@/lib/supabase/server'
 
 export async function getIGConnection() {
-    const supabase = createClient()
+    const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
 
     if (!user) {
@@ -13,7 +13,7 @@ export async function getIGConnection() {
         .from('ig_connections')
         .select('*')
         .eq('user_id', user.id)
-        .single()
+        .maybeSingle()
 
     if (error || !data) {
         return null

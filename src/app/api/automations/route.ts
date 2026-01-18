@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
         .from('ig_connections')
         .select('access_token')
         .eq('user_id', user.id)
-        .single();
+        .maybeSingle();
 
     if (!connection) {
         return NextResponse.json({ error: 'Instagram connection required to create automations.' }, { status: 403 });

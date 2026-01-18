@@ -42,7 +42,7 @@ export default function AutomationsPage() {
                     .from('ig_connections')
                     .select('access_token')
                     .eq('user_id', user.id)
-                    .single();
+                    .maybeSingle();
 
                 setIsConnected(!!data);
             }
