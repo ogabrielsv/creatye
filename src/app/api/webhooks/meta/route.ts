@@ -1,4 +1,6 @@
+
 import { NextRequest, NextResponse } from 'next/server';
+import { processInstagramMessage } from '@/lib/automations/processor';
 
 export async function GET(req: NextRequest) {
     // Verification Challenge for Meta Webhooks
@@ -15,14 +17,33 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-    // Handle Incoming Events (Messages, etc.)
-    const body = await req.json();
-    console.log('Webhook Received:', body);
+    try {
+        const body = await req.json();
 
-    // Trigger Automations here?
-    // 1. Extract Sender ID
-    // 2. Find Contact in DB
-    // 3. Check for active execution in 'waiting' state (input await) or Start New
+        // Log for debugging
+        // console.log('Webhook Received:', JSON.stringify(body, null, 2));
 
-    return NextResponse.json({ received: true });
+        if (body.object === 'instagram' && body.entry) {
+            for (const entry of body.entry) {
+                if (entry.messaging) {
+                    // Process all messaging events in parallel or sequential? 
+                    // Use Promise.all if high volume, but sequential is safer for ordering.
+                    // Given this is a simple implementation, Promise.all is fine but identifying order matters for conversation.
+                    // For now, let's just await each.
+                    for (const event of entry.messaging) {
+                        try {
+                            await processInstagramMessage(event);
+                        } catch (e) {
+                            console.error('Error processing event:', event, e);
+                        }
+                    }
+                }
+            }
+        }
+
+        return NextResponse.json({ received: true });
+    } catch (error) {
+        console.error('Webhook Error:', error);
+        return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+    }
 }
