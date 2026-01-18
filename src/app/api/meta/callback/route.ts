@@ -1,14 +1,13 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
+import { cookies } from 'next/headers'
 
 export async function GET(request: Request) {
     const { searchParams } = new URL(request.url)
     const code = searchParams.get('code')
     const error = searchParams.get('error')
-
-    // In strict oauth flow we should validate state.
-    // const state = searchParams.get('state') 
+    const state = searchParams.get('state')
 
     if (error) {
         return NextResponse.redirect(new URL(`/automations?error=${error}`, request.url))
@@ -16,6 +15,17 @@ export async function GET(request: Request) {
 
     if (!code) {
         return NextResponse.redirect(new URL('/automations?error=no_code', request.url))
+    }
+
+    // Validate State
+    const cookieStore = await cookies()
+    const storedState = cookieStore.get('meta_oauth_state')?.value
+
+    if (!state || state !== storedState) {
+        // In production, we should enforce state validation.
+        // For now, if state is missing in cookie (e.g. cross-browser), we might be lenient or fail.
+        // Let's fail for security as requested.
+        return NextResponse.redirect(new URL('/automations?error=invalid_state', request.url))
     }
 
     const supabase = await createClient()
@@ -26,84 +36,80 @@ export async function GET(request: Request) {
     }
 
     try {
-        // 1. Exchange Code for Short-Lived Access Token
-        const APP_ID = process.env.META_APP_ID
-        const APP_SECRET = process.env.META_APP_SECRET
+        const INSTAGRAM_APP_ID = process.env.INSTAGRAM_APP_ID
+        const INSTAGRAM_APP_SECRET = process.env.INSTAGRAM_APP_SECRET
         const REDIRECT_URI = process.env.META_REDIRECT_URI || `${process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/api/meta/callback`
 
-        const tokenRes = await fetch(
-            `https://graph.facebook.com/v19.0/oauth/access_token?client_id=${APP_ID}&redirect_uri=${REDIRECT_URI}&client_secret=${APP_SECRET}&code=${code}`
-        )
+        if (!INSTAGRAM_APP_ID || !INSTAGRAM_APP_SECRET) {
+            throw new Error('Missing Instagram App Credentials')
+        }
+
+        // 1. Exchange Code for Short-Lived Access Token (Instagram API)
+        const formData = new FormData()
+        formData.append('client_id', INSTAGRAM_APP_ID)
+        formData.append('client_secret', INSTAGRAM_APP_SECRET)
+        formData.append('grant_type', 'authorization_code')
+        formData.append('redirect_uri', REDIRECT_URI)
+        formData.append('code', code)
+
+        const tokenRes = await fetch('https://api.instagram.com/oauth/access_token', {
+            method: 'POST',
+            body: formData,
+        })
         const tokenData = await tokenRes.json()
 
-        if (tokenData.error) {
-            throw new Error(tokenData.error.message)
+        if (tokenData.error_message || tokenData.error) {
+            throw new Error(tokenData.error_message || JSON.stringify(tokenData.error))
         }
 
         const shortLivedToken = tokenData.access_token
+        const igUserId = tokenData.user_id // Basic ID from token exchange
 
         // 2. Exchange Short-Lived for Long-Lived Token
+        // Endpoint: https://graph.instagram.com/access_token
         const longLivedRes = await fetch(
-            `https://graph.facebook.com/v19.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${APP_ID}&client_secret=${APP_SECRET}&fb_exchange_token=${shortLivedToken}`
+            `https://graph.instagram.com/access_token?grant_type=ig_exchange_token&client_secret=${INSTAGRAM_APP_SECRET}&access_token=${shortLivedToken}`
         )
         const longLivedData = await longLivedRes.json()
 
-        const userAccessToken = longLivedData.access_token || shortLivedToken
-        const expiresSeconds = longLivedData.expires_in || tokenData.expires_in || 5184000 // 60 days default
+        if (longLivedData.error) {
+            throw new Error(longLivedData.error.message)
+        }
+
+        const longLivedToken = longLivedData.access_token || shortLivedToken
+        const expiresSeconds = longLivedData.expires_in || 5184000
         const expiresAt = new Date(Date.now() + expiresSeconds * 1000).toISOString()
 
-        // 3. Get User Pages to find the connected Instagram Account
-        const pagesRes = await fetch(
-            `https://graph.facebook.com/v19.0/me/accounts?access_token=${userAccessToken}`
+        // 3. Get User Details
+        // We need the username and hopefully a more stable ID if possible.
+        // With Instagram Business Login, we are authenticating AS the Instagram User directly.
+
+        const userDetailsRes = await fetch(
+            `https://graph.instagram.com/v19.0/me?fields=user_id,username,name,account_type,profile_picture_url&access_token=${longLivedToken}`
         )
-        const pagesData = await pagesRes.json()
+        const userDetails = await userDetailsRes.json()
 
-        let pageId = null
-        let igUserId = null
-        let igUsername = null
-        let pageAccessToken = null
-
-        if (pagesData.data && pagesData.data.length > 0) {
-            // Find one with IG
-            for (const page of pagesData.data) {
-                // Fetch page details including access_token and instagram_business_account
-                const pageDetailsRes = await fetch(
-                    `https://graph.facebook.com/v19.0/${page.id}?fields=instagram_business_account,access_token&access_token=${userAccessToken}`
-                )
-                const pageDetails = await pageDetailsRes.json()
-
-                if (pageDetails.instagram_business_account) {
-                    pageId = page.id
-                    igUserId = pageDetails.instagram_business_account.id
-                    pageAccessToken = pageDetails.access_token // This is the Page Access Token
-
-                    // Get IG Username
-                    const igUserRes = await fetch(
-                        `https://graph.facebook.com/v19.0/${igUserId}?fields=username&access_token=${userAccessToken}`
-                    )
-                    const igUserData = await igUserRes.json()
-                    igUsername = igUserData.username
-                    break
-                }
-            }
+        if (userDetails.error) {
+            throw new Error(userDetails.error.message)
         }
 
-        if (!igUserId) {
-            throw new Error('No Instagram Business account connected to your Facebook Pages.')
-        }
+        const finalIgUserId = userDetails.user_id || userDetails.id || igUserId
+        const finalIgUsername = userDetails.username
 
         // 4. Save to Supabase
+        // We do NOT use page_id or page_access_token here as this is direct IG login.
+
         const { error: dbError } = await supabase.from('ig_connections').upsert({
             user_id: user.id,
             provider: 'instagram',
-            access_token: userAccessToken, // Keeping legacy column filled just in case
-            user_access_token: userAccessToken,
-            page_access_token: pageAccessToken,
+            access_token: longLivedToken, // Main token
+            user_access_token: longLivedToken,
+            page_access_token: null, // Not applicable
             token_expires_at: expiresAt,
-            page_id: pageId,
-            ig_user_id: igUserId,
-            username: igUsername,      // Legacy column
-            ig_username: igUsername,   // New column
+            page_id: null, // Not applicable
+            ig_user_id: finalIgUserId,
+            username: finalIgUsername,
+            ig_username: finalIgUsername,
             updated_at: new Date().toISOString()
         })
 
@@ -115,7 +121,7 @@ export async function GET(request: Request) {
         return NextResponse.redirect(new URL('/automations?connected=true', request.url))
 
     } catch (err: any) {
-        console.error('Meta Callback Error:', err)
+        console.error('Instagram Callback Error:', err)
         return NextResponse.redirect(new URL(`/automations?error=${encodeURIComponent(err.message)}`, request.url))
     }
 }

@@ -12,16 +12,14 @@ export async function GET(request: Request) {
         return NextResponse.redirect(new URL('/login', request.url))
     }
 
-    const APP_ID = process.env.META_APP_ID
-    // Ensure we use the exact redirect URI registered in Meta
+    const INSTAGRAM_APP_ID = process.env.INSTAGRAM_APP_ID
     const REDIRECT_URI = process.env.META_REDIRECT_URI || `${process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/api/meta/callback`
 
-    if (!APP_ID) {
-        return NextResponse.json({ error: 'Missing META_APP_ID env' }, { status: 500 })
+    if (!INSTAGRAM_APP_ID) {
+        return NextResponse.json({ error: 'Missing INSTAGRAM_APP_ID env' }, { status: 500 })
     }
 
     // Generate state for CSRF protection
-    // Combining userId, nonce, and timestamp
     const nonce = uuidv4()
     const stateData = {
         userId: user.id,
@@ -30,19 +28,18 @@ export async function GET(request: Request) {
     }
     const state = Buffer.from(JSON.stringify(stateData)).toString('base64')
 
-    // Define scopes required for Instagram Automation
+    // Define scopes required for Instagram Business Login
+    // Note: 'instagram_business_basic' is the correct scope for the new Business Login flow
     const scopes = [
-        'instagram_basic',
-        'instagram_manage_comments',
-        'instagram_manage_messages',
-        'pages_show_list',
+        'instagram_business_basic',
+        'instagram_business_manage_messages',
+        'instagram_business_manage_comments',
+        'instagram_business_content_publish',
+        // 'instagram_business_manage_insights', // Optional
     ].join(',')
 
-    const authUrl = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${APP_ID}&redirect_uri=${REDIRECT_URI}&response_type=code&scope=${scopes}&state=${state}`
-
-    // We rely on the state param for CSRF validation in the callback.
-    // Ideally we would set a cookie here to verify against, but strictly relying on base64(signed_data) or database state is also a pattern.
-    // The requirement suggests "cookie httpOnly".
+    // Use the Instagram OAuth URL
+    const authUrl = `https://www.instagram.com/oauth/authorize?enable_fb_login=0&force_authentication=1&client_id=${INSTAGRAM_APP_ID}&redirect_uri=${REDIRECT_URI}&response_type=code&scope=${scopes}&state=${state}`
 
     const response = NextResponse.redirect(authUrl)
 
