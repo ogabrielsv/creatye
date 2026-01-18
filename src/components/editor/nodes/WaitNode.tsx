@@ -55,3 +55,5 @@ export const WaitNode = memo(({ data, selected }: NodeProps) => {
         </div>
     );
 });
+
+WaitNode.displayName = 'WaitNode';

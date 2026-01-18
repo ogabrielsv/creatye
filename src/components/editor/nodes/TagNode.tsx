@@ -66,3 +66,5 @@ export const TagNode = memo(({ data, selected }: NodeProps) => {
         </div>
     );
 });
+
+TagNode.displayName = 'TagNode';

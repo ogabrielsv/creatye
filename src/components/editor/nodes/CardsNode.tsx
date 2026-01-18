@@ -101,3 +101,5 @@ export const CardsNode = memo(({ data, selected }: NodeProps) => {
         </div>
     );
 });
+
+CardsNode.displayName = 'CardsNode';

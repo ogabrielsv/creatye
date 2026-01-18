@@ -8,12 +8,39 @@ import { toast } from 'sonner';
 
 export default function SettingsClient() {
     const [loading, setLoading] = useState(true);
+    // eslint-disable-next-line
     const [connection, setConnection] = useState<any>(null);
     const supabase = createClient();
     const router = useRouter();
     const searchParams = useSearchParams();
 
     useEffect(() => {
+        const checkConnection = async () => {
+            try {
+                const { data: { user } } = await supabase.auth.getUser();
+                if (!user) return;
+
+                const { data, error } = await supabase
+                    .from('ig_connections')
+                    .select('*')
+                    .eq('user_id', user.id)
+                    .single();
+
+                if (error && error.code !== 'PGRST116') {
+                    // ignore single mismatch if it means just no rows
+                    console.error(error);
+                }
+
+                if (data) {
+                    setConnection(data);
+                }
+            } catch (err) {
+                console.error(err);
+            } finally {
+                setLoading(false);
+            }
+        };
+
         checkConnection();
 
         // Handle URL params
@@ -28,28 +55,7 @@ export default function SettingsClient() {
             toast.error(`Erro na conexão: ${error}`);
             router.replace('/settings');
         }
-    }, []);
-
-    const checkConnection = async () => {
-        try {
-            const { data: { user } } = await supabase.auth.getUser();
-            if (!user) return;
-
-            const { data, error } = await supabase
-                .from('ig_connections')
-                .select('*')
-                .eq('user_id', user.id)
-                .single();
-
-            if (data) {
-                setConnection(data);
-            }
-        } catch (err) {
-            console.error(err);
-        } finally {
-            setLoading(false);
-        }
-    };
+    }, [router, searchParams, supabase]);
 
     const handleConnect = () => {
         window.location.href = '/api/meta/connect';

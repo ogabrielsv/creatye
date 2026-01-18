@@ -69,3 +69,5 @@ export const ButtonsNode = memo(({ data, selected }: NodeProps) => {
         </div>
     );
 });
+
+ButtonsNode.displayName = 'ButtonsNode';

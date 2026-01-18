@@ -1,0 +1,104 @@
+﻿
+> creatye@0.1.0 lint
+> next lint
+
+node.exe : 
+No linha:1 caractere:1
++ & "C:\Program 
+Files\nodejs/node.exe" 
+"C:\Program 
+Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~
+    + CategoryInfo          
+    : NotSpecified: (:Stri  
+  ng) [], RemoteException
+    + FullyQualifiedErrorId 
+    : NativeCommandError
+ 
+./src/app/(dashboard)/settin
+gs/SettingsClient.tsx
+11:5  Error: Definition for 
+rule '@typescript-eslint/no-
+explicit-any' was not 
+found.  @typescript-eslint/n
+o-explicit-any
+
+./src/app/editor/[id]/page.t
+sx
+45:8  Warning: React Hook 
+useEffect has a missing 
+dependency: 'fetchDraft'. 
+Either include it or remove 
+the dependency array.  
+react-hooks/exhaustive-deps
+106:27  Warning: React Hook 
+useCallback received a 
+function whose dependencies 
+are unknown. Pass an inline 
+function instead.  
+react-hooks/exhaustive-deps
+
+./src/components/editor/Node
+Inspector.tsx
+176:53  Warning: Using 
+`<img>` could result in 
+slower LCP and higher 
+bandwidth. Consider using 
+`<Image />` from 
+`next/image` to 
+automatically optimize 
+images. This may incur 
+additional usage or cost 
+from your provider. See: htt
+ps://nextjs.org/docs/message
+s/no-img-element  
+@next/next/no-img-element
+
+./src/components/editor/node
+s/ButtonsNode.tsx
+6:28  Error: Component 
+definition is missing 
+display name  
+react/display-name
+
+./src/components/editor/node
+s/CardsNode.tsx
+7:26  Error: Component 
+definition is missing 
+display name  
+react/display-name
+44:29  Warning: Using 
+`<img>` could result in 
+slower LCP and higher 
+bandwidth. Consider using 
+`<Image />` from 
+`next/image` to 
+automatically optimize 
+images. This may incur 
+additional usage or cost 
+from your provider. See: htt
+ps://nextjs.org/docs/message
+s/no-img-element  
+@next/next/no-img-element
+
+./src/components/editor/node
+s/TagNode.tsx
+6:24  Error: Component 
+definition is missing 
+display name  
+react/display-name
+
+./src/components/editor/node
+s/WaitNode.tsx
+6:25  Error: Component 
+definition is missing 
+display name  
+react/display-name
+
+info  - Need to disable 
+some ESLint rules? Learn 
+more here: https://nextjs.or
+g/docs/basic-features/eslint
+#disabling-rules
