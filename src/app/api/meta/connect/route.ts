@@ -43,8 +43,9 @@ export async function GET(request: Request) {
     response.cookies.set('meta_oauth_state', state, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
-        path: '/', // Ensure path is root
-        maxAge: 600 // 10 minutes
+        path: '/',
+        maxAge: 600, // 10 minutes
+        sameSite: 'lax'
     })
 
     return response

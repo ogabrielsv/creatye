@@ -1,8 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
-import { NextResponse } from 'next/server'
-import { cookies } from 'next/headers'
+import { NextRequest, NextResponse } from 'next/server'
 
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const code = searchParams.get('code')
     const error = searchParams.get('error')
@@ -16,9 +15,8 @@ export async function GET(request: Request) {
         return NextResponse.redirect(new URL('/automations?error=no_code', request.url))
     }
 
-    // Validate State
-    const cookieStore = cookies()
-    const storedState = cookieStore.get('meta_oauth_state')?.value
+    // Validate State using request cookies (Fix for Next.js 500 error)
+    const storedState = request.cookies.get('meta_oauth_state')?.value
 
     if (!state || state !== storedState) {
         return NextResponse.redirect(new URL('/automations?error=invalid_state', request.url))
@@ -40,7 +38,7 @@ export async function GET(request: Request) {
             throw new Error('Missing Instagram App Credentials')
         }
 
-        // 1. Exchange Code for Short-Lived Access Token (Instagram API)
+        // 1. Exchange Code for Short-Lived Access Token
         const params = new URLSearchParams()
         params.append('client_id', INSTAGRAM_APP_ID)
         params.append('client_secret', INSTAGRAM_APP_SECRET)
@@ -50,7 +48,7 @@ export async function GET(request: Request) {
 
         const tokenRes = await fetch('https://api.instagram.com/oauth/access_token', {
             method: 'POST',
-            body: params // URLSearchParams sets default content-type header for form-urlencoded
+            body: params
         })
         const tokenData = await tokenRes.json()
 
@@ -59,10 +57,8 @@ export async function GET(request: Request) {
         }
 
         const shortLivedToken = tokenData.access_token
-        // Note: standard IG OAuth might return 'user_id' in tokenData
 
-        // 2. Exchange Short-Lived for Long-Lived Token
-        // Endpoint: https://graph.instagram.com/access_token
+        // 2. Exchange for Long-Lived Token
         const longLivedRes = await fetch(
             `https://graph.instagram.com/access_token?grant_type=ig_exchange_token&client_secret=${INSTAGRAM_APP_SECRET}&access_token=${shortLivedToken}`
         )
@@ -77,7 +73,6 @@ export async function GET(request: Request) {
         const expiresAt = new Date(Date.now() + expiresSeconds * 1000).toISOString()
 
         // 3. Get User Details
-        // We use graph.instagram.com/me as requested
         const userDetailsRes = await fetch(
             `https://graph.instagram.com/me?fields=id,username,account_type,profile_picture_url&access_token=${longLivedToken}`
         )
@@ -90,12 +85,10 @@ export async function GET(request: Request) {
         const finalIgUserId = userDetails.id
         const finalIgUsername = userDetails.username
         const finalIgProfilePic = userDetails.profile_picture_url
-        // Use username as fallback name since /me might not return 'name' for some account types or scopes
+        // Use username as fallback name
         const finalIgName = userDetails.username
 
-        // 4. Save to Supabase
-        // Only standardized fields. No page_id unless we did FB flow.
-
+        // 4. Save to Supabase (Standardized fields only)
         const payload: any = {
             user_id: user.id,
             access_token: longLivedToken,
@@ -109,6 +102,7 @@ export async function GET(request: Request) {
             ig_username: finalIgUsername,
             ig_name: finalIgName,
             ig_profile_picture_url: finalIgProfilePic,
+            page_id: null
         }
 
         const { error: dbError } = await supabase
