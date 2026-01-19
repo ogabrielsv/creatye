@@ -169,6 +169,39 @@ export default function PropertiesPanel({ selectedNode, onClose, onUpdate, onDel
                             </select>
                         </div>
 
+                        {data.triggerType === 'comment_keyword' && (
+                            <div>
+                                <label className="block text-xs font-semibold text-muted-foreground mb-1">Publicação Alvo</label>
+                                <select
+                                    className="w-full text-sm p-2 border rounded bg-background"
+                                    value={data.targetMode || 'any'}
+                                    onChange={(e) => handleChange('targetMode', e.target.value)}
+                                >
+                                    <option value="any">Qualquer Publicação</option>
+                                    <option value="specific">Publicação Específica</option>
+                                </select>
+                            </div>
+                        )}
+
+                        {data.triggerType === 'comment_keyword' && data.targetMode === 'specific' && (
+                            <div className="bg-zinc-50 border p-2 rounded">
+                                <label className="block text-xs font-semibold text-muted-foreground mb-1">ID da Publicação (Media ID)</label>
+                                <div className="flex gap-1">
+                                    <input
+                                        type="text"
+                                        className="w-full text-xs p-2 border rounded bg-background font-mono"
+                                        placeholder="1798..."
+                                        value={data.targetMediaId || ''}
+                                        onChange={(e) => handleChange('targetMediaId', e.target.value)}
+                                    />
+                                    {/* Future: Add 'Select' button to open modal fetching from /api/instagram/media */}
+                                </div>
+                                <p className="text-[10px] text-muted-foreground mt-1">
+                                    Cole o Media ID do post. (Em breve: seletor visual)
+                                </p>
+                            </div>
+                        )}
+
                         {(data.triggerType === 'dm_keyword' || data.triggerType === 'comment_keyword' || !data.triggerType) && (
                             <>
                                 <div>

@@ -134,7 +134,8 @@ export default function AutomationsPage() {
         if (!confirm('Tem certeza que deseja excluir esta automação?')) return;
 
         try {
-            const res = await fetch(`/api/automations/${id}`, { method: 'DELETE' });
+            // Updated to use Soft Delete endpoint as requested
+            const res = await fetch(`/api/automations/${id}/delete`, { method: 'PATCH' });
             if (res.ok) {
                 setAutomations(prev => prev.filter(a => a.id !== id));
             } else {
