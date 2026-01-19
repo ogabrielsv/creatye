@@ -23,7 +23,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
     try {
         const body = await request.json()
-        console.log('Webhook Payload:', JSON.stringify(body, null, 2))
+        console.log('WEBHOOK_RECEIVED:', JSON.stringify(body, null, 2))
 
         if (body.object === 'instagram') {
             const supabase = createAdminClient()
@@ -53,96 +53,128 @@ async function handleMessageEvent(supabase: any, event: any) {
 
     console.log('[DM] sender:', senderId, 'recipient:', recipientId, 'text:', messageText)
 
-    // 1) encontrar connection pelo recipientId (instagram_scoped_id)
-    let { data: connection } = await supabase
+    // 1) Find connection (Robust Strategy with Logs)
+    let connection = null
+
+    // Try by scoped ID first
+    let { data: connScoped } = await supabase
         .from('ig_connections')
         .select('*')
         .eq('instagram_scoped_id', recipientId)
         .maybeSingle()
 
-    // 2) fallback antigo
-    if (!connection) {
-        const res2 = await supabase
+    if (connScoped) {
+        connection = connScoped
+        console.log('CONNECTION_FOUND_BY_SCOPED_ID:', connection.id)
+    } else {
+        // Try by legacy ig_user_id
+        let { data: connLegacy } = await supabase
             .from('ig_connections')
             .select('*')
             .eq('ig_user_id', recipientId)
             .maybeSingle()
-        connection = res2.data ?? null
-        if (connection) console.log('[DM] Found connection by ig_user_id fallback')
+
+        if (connLegacy) {
+            connection = connLegacy
+            console.log('CONNECTION_FOUND_BY_IG_USER_ID:', connection.id)
+            // Self-heal
+            await supabase.from('ig_connections').update({ instagram_scoped_id: recipientId }).eq('id', connection.id)
+        } else {
+            // Auto-link heuristic
+            console.log('[DM] No connection found, trying auto-link...')
+            const { data: latest } = await supabase
+                .from('ig_connections')
+                .select('*')
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle()
+
+            if (latest) {
+                await supabase.from('ig_connections').update({ instagram_scoped_id: recipientId }).eq('id', latest.id)
+                connection = { ...latest, instagram_scoped_id: recipientId }
+                console.log('CONNECTION_AUTO_LINKED:', connection.id)
+            }
+        }
     }
 
-    // 3) auto-link se ainda não achar
     if (!connection) {
-        console.log('[DM] No connection for recipient:', recipientId, '=> trying auto-link latest connection...')
-        const latest = await supabase
-            .from('ig_connections')
-            .select('*')
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .maybeSingle()
-
-        if (latest.data) {
-            // vincula recipientId ao registro mais recente
-            await supabase
-                .from('ig_connections')
-                .update({ instagram_scoped_id: recipientId })
-                .eq('id', latest.data.id)
-
-            connection = { ...latest.data, instagram_scoped_id: recipientId }
-            console.log('[DM] Auto-linked recipientId to ig_connections.id:', latest.data.id)
-        } else {
-            console.log('[DM] Still no connection found; ig_connections empty.')
-            return
-        }
+        console.log('CONNECTION_NOT_FOUND for recipient:', recipientId)
+        return
     }
 
     const userId = connection.user_id
     const accessToken = connection.access_token
-    if (!userId || !accessToken) {
-        console.log('[DM] connection missing user_id/access_token')
-        return
-    }
 
-    // 4) carregar automações publicadas DM
+    // 2) Fetch Automations (Manual Query)
     const { data: automations, error: autoError } = await supabase
         .from('automations')
-        .select('*, automation_triggers(*), automation_actions(*)')
+        .select('id, name, status, type, user_id')
         .eq('user_id', userId)
         .eq('status', 'published')
         .eq('type', 'dm')
 
     if (autoError) {
-        console.log('[DM] automations query error:', autoError)
+        console.log('AUTOMATIONS_QUERY_ERROR:', autoError)
         return
     }
 
-    if (!automations || automations.length === 0) {
-        console.log('[DM] no published dm automations for user:', userId)
-        return
-    }
+    console.log(`AUTOMATIONS_FOUND: ${automations?.length || 0} for user ${userId}`)
+
+    if (!automations || automations.length === 0) return
 
     const normalizedMsg = messageText.trim().toLowerCase()
         .replace(/[^\p{L}\p{N}\s]/gu, '')
         .replace(/\s+/g, ' ')
 
-    // 5) procurar trigger keyword match
+    // 3) Iterate Automations
     for (const auto of automations) {
-        const triggers = auto.automation_triggers || []
-        const matched = triggers.find((t: any) => {
-            if (t.trigger_type !== 'keyword') return false
-            const kw = (t.trigger_filter?.keyword || '').toString().trim().toLowerCase()
-            if (!kw) return false
-            const mode = (t.trigger_filter?.match_mode || 'contains').toString()
-            if (mode === 'exact') return normalizedMsg === kw
-            return normalizedMsg.includes(kw)
+        console.log(`Testing automation: ${auto.name} (${auto.id})`)
+
+        // Fetch Triggers
+        const { data: triggers } = await supabase
+            .from('automation_triggers')
+            .select('*')
+            .eq('automation_id', auto.id)
+
+        // Fetch Actions
+        const { data: actions } = await supabase
+            .from('automation_actions')
+            .select('*')
+            .eq('automation_id', auto.id)
+
+        console.log(`TRIGGERS_FOUND: ${triggers?.length || 0}, ACTIONS_FOUND: ${actions?.length || 0}`)
+
+        // Check Matches
+        if (!triggers || triggers.length === 0) continue
+
+        const matchedTrigger = triggers.find((t: any) => {
+            const type = (t.trigger_type || '').toLowerCase()
+            if (type !== 'keyword') return false
+
+            const filter = t.trigger_filter || {}
+            const keyword = String(filter.keyword || '').trim().toLowerCase()
+            if (!keyword) return false
+
+            const matchMode = String(filter.match_mode || 'contains').toLowerCase()
+            const isExact = matchMode === 'exact' || matchMode === 'equals'
+
+            console.log(`Checking trigger: keyword="${keyword}", mode="${matchMode}" against msg="${normalizedMsg}"`)
+
+            if (isExact) return normalizedMsg === keyword
+            return normalizedMsg.includes(keyword)
         })
 
-        if (!matched) continue
+        if (!matchedTrigger) {
+            console.log('No trigger matched.')
+            continue
+        }
 
-        console.log('[DM] Matched automation:', auto.id, auto.name)
+        console.log(`MATCHED_AUTOMATION: ${auto.id} (${auto.name})`)
 
-        // 6) criar execution running
-        const { data: exec, error: execErr } = await supabase
+        // 4) Execute
+        const sendAction = actions?.find((a: any) => a.kind === 'send_dm')
+
+        const { data: exec } = await supabase
             .from('automation_executions')
             .insert({
                 automation_id: auto.id,
@@ -153,35 +185,30 @@ async function handleMessageEvent(supabase: any, event: any) {
             .select()
             .single()
 
-        if (execErr || !exec) {
-            console.log('[DM] failed to create execution:', execErr)
+        if (!exec) {
+            console.error('Failed to create execution log')
             continue
         }
 
-        const action = (auto.automation_actions || []).find((a: any) => a.kind === 'send_dm')
-        if (!action?.message_text) {
-            await supabase.from('automation_executions')
-                .update({ status: 'failed', error: 'No send_dm action found' })
-                .eq('id', exec.id)
+        if (!sendAction || !sendAction.message_text) {
+            console.log('No send_dm action found.')
+            await supabase.from('automation_executions').update({ status: 'failed', error: 'No send_dm action' }).eq('id', exec.id)
             continue
         }
 
+        console.log('SENDING_DM...')
         try {
-            await sendInstagramDM(accessToken, senderId, action.message_text)
-
+            await sendInstagramDM(accessToken, senderId, sendAction.message_text)
+            await supabase.from('automation_executions').update({ status: 'success' }).eq('id', exec.id)
+            console.log('DM_SENT_OK')
+        } catch (err: any) {
+            console.error('DM_SENT_ERROR:', err)
             await supabase.from('automation_executions')
-                .update({ status: 'success' })
+                .update({ status: 'failed', error: err.message || JSON.stringify(err) })
                 .eq('id', exec.id)
-
-            console.log('[DM] Sent DM successfully')
-        } catch (e: any) {
-            await supabase.from('automation_executions')
-                .update({ status: 'failed', error: (e?.message || JSON.stringify(e)) })
-                .eq('id', exec.id)
-            console.log('[DM] sendInstagramDM failed:', e)
         }
 
-        // parar no primeiro match
+        // Stop after first match
         break
     }
 }
