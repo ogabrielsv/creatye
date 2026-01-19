@@ -197,6 +197,23 @@ export default function AutomationsPage() {
 
                 <div className="flex gap-3">
                     <button
+                        onClick={async () => {
+                            if (!confirm('Criar automação de TESTE (oi->aprovado)?')) return;
+                            const res = await fetch('/api/debug/create-test-automation', { method: 'POST' });
+                            const data = await res.json();
+                            if (data.success) {
+                                alert('Automação criada!');
+                                router.refresh();
+                                fetchAutomations();
+                            } else {
+                                alert('Erro: ' + JSON.stringify(data));
+                            }
+                        }}
+                        className="px-4 py-2 bg-red-500/10 text-red-500 hover:bg-red-500/20 font-bold rounded-lg border border-red-500/20 text-xs"
+                    >
+                        Criar Teste (1-click)
+                    </button>
+                    <button
                         onClick={() => setIsFolderModalOpen(true)}
                         className="px-4 py-2 bg-background border border-border text-foreground font-medium rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors flex items-center gap-2"
                     >

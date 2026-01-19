@@ -174,7 +174,9 @@ async function handleMessageEvent(supabase: any, event: any) {
         // 4) Execute
         const sendAction = actions?.find((a: any) => a.kind === 'send_dm')
 
-        const { data: exec } = await supabase
+        let execId: string | null = null
+
+        const { data: exec, error: execErr } = await supabase
             .from('automation_executions')
             .insert({
                 automation_id: auto.id,
@@ -182,30 +184,38 @@ async function handleMessageEvent(supabase: any, event: any) {
                 status: 'running',
                 payload: { sender_id: senderId, recipient_id: recipientId, message: messageText }
             })
-            .select()
-            .single()
+            .select('id')
+            .maybeSingle()
 
-        if (!exec) {
-            console.error('Failed to create execution log')
-            continue
+        if (execErr) {
+            console.error('[EXEC_LOG] insert failed:', execErr)
+            // NÃO bloqueia a automação: continua sem log
+        } else if (exec?.id) {
+            execId = exec.id
         }
 
         if (!sendAction || !sendAction.message_text) {
             console.log('No send_dm action found.')
-            await supabase.from('automation_executions').update({ status: 'failed', error: 'No send_dm action' }).eq('id', exec.id)
+            if (execId) {
+                await supabase.from('automation_executions').update({ status: 'failed', error: 'No send_dm action' }).eq('id', execId)
+            }
             continue
         }
 
         console.log('SENDING_DM...')
         try {
             await sendInstagramDM(accessToken, senderId, sendAction.message_text)
-            await supabase.from('automation_executions').update({ status: 'success' }).eq('id', exec.id)
+            if (execId) {
+                await supabase.from('automation_executions').update({ status: 'success' }).eq('id', execId)
+            }
             console.log('DM_SENT_OK')
         } catch (err: any) {
             console.error('DM_SENT_ERROR:', err)
-            await supabase.from('automation_executions')
-                .update({ status: 'failed', error: err.message || JSON.stringify(err) })
-                .eq('id', exec.id)
+            if (execId) {
+                await supabase.from('automation_executions')
+                    .update({ status: 'failed', error: err.message || JSON.stringify(err) })
+                    .eq('id', execId)
+            }
         }
 
         // Stop after first match
