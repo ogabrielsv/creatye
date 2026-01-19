@@ -44,7 +44,12 @@ export async function GET(request: NextRequest) {
         return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json(data);
+    const normalizedData = (data || []).map((item: any) => ({
+        ...item,
+        title: item.title || item.name
+    }));
+
+    return NextResponse.json(normalizedData);
 }
 
 export async function POST(request: NextRequest) {
@@ -58,48 +63,88 @@ export async function POST(request: NextRequest) {
     try {
         const json = await request.json();
 
-        const name = json.name ? json.name.trim() : 'Nova Automação';
-        const channels = json.channels || [];
+        // Normalization
+        const rawName = json.name?.trim();
+        const rawTitle = json.title?.trim();
+        const finalName = rawName || rawTitle || 'Nova Automação';
+        const finalTitle = rawTitle || rawName || 'Nova Automação'; // User wants title populated if possible
+
+        const channels = Array.isArray(json.channels) ? json.channels : [];
         const folder_id = json.folder_id || null;
 
-        // We do NOT enforce IG connection here to allow exploring the builder, 
-        // unless channels explicitly require it. But for a "Draft", it's usually fine.
-        // User requested: "Criar no Supabase via POST /api/automations com status draft."
-
-        // Determine type from channels
+        // Type Inference
         let type = 'dm';
-        if (channels && channels.length > 0) {
-            const ch = channels[0];
-            if (channels.length > 1) type = 'mixed';
-            else if (ch === 'dm') type = 'dm';
-            else if (ch === 'feed_comment') type = 'comment';
-            else if (ch === 'live_comment') type = 'live_comment';
-            else if (ch === 'story_mention') type = 'story_mention';
-            else if (ch === 'story_reply') type = 'story_reply';
-            else type = 'dm'; // fallback
+        if (channels.length > 0) {
+            if (channels.length > 1) {
+                type = 'mixed';
+            } else {
+                const ch = channels[0];
+                if (ch === 'dm') type = 'dm';
+                else if (ch === 'comment_feed') type = 'comment'; // Fixed mapping from create page
+                else if (ch === 'comment_live') type = 'live_comment';
+                else if (ch === 'story_mention') type = 'story_mention';
+                else if (ch === 'story_reply') type = 'story_reply';
+                else type = 'dm';
+            }
         }
 
         const status = json.status === 'published' ? 'published' : 'draft';
         const published_at = status === 'published' ? new Date().toISOString() : null;
 
-        // Create Automation
-        const { data: automation, error } = await supabase
-            .from('automations')
-            .insert([{
-                name,
-                description: json.description || '',
-                channels: channels, // Now we have a column for this
-                folder_id,
-                user_id: user.id,
-                status: status,
-                published_at: published_at,
-                type: type,
-                executions: 0
-            }])
-            .select()
-            .single();
+        // Base payload
+        const payload: any = {
+            name: finalName,
+            description: json.description || '',
+            channels: channels,
+            folder_id,
+            user_id: user.id,
+            status: status,
+            published_at: published_at,
+            type: type,
+            executions: 0
+        };
+
+        // Attempt to insert with Title
+        let automation;
+        let error;
+
+        // Try inserting with 'title'
+        try {
+            const { data, error: errWithTitle } = await supabase
+                .from('automations')
+                .insert([{ ...payload, title: finalTitle }])
+                .select()
+                .single();
+
+            if (!errWithTitle) {
+                automation = data;
+            } else {
+                if (errWithTitle.code === '42703') { // Undefined column
+                    // Fallback: Insert without title
+                    const { data: dataNoTitle, error: errNoTitle } = await supabase
+                        .from('automations')
+                        .insert([payload])
+                        .select()
+                        .single();
+                    automation = dataNoTitle;
+                    error = errNoTitle;
+                } else {
+                    error = errWithTitle;
+                }
+            }
+        } catch (e) {
+            // Fallback if exception
+            const { data: dataFallback, error: errFallback } = await supabase
+                .from('automations')
+                .insert([payload])
+                .select()
+                .single();
+            automation = dataFallback;
+            error = errFallback;
+        }
 
         if (error) {
+            console.error("Error creating automation:", error);
             return NextResponse.json({ error: error.message }, { status: 500 });
         }
 

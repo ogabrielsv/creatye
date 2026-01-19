@@ -38,6 +38,7 @@ export async function GET(
 
     return NextResponse.json({
         ...automation,
+        title: automation.title || automation.name,
         nodes: draft?.nodes || [],
         edges: draft?.edges || []
     });
