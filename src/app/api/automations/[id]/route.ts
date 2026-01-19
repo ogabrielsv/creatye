@@ -7,9 +7,10 @@ export async function GET(
     { params }: { params: { id: string } }
 ) {
     const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
 
-    if (!user) {
+    if (!user || authError) {
+        console.log('[API] Unauthorized access to /api/automations/[id]', { error: authError, user });
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
