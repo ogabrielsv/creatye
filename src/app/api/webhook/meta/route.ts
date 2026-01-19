@@ -182,7 +182,8 @@ async function handleMessageEvent(supabase: any, event: any) {
                 automation_id: auto.id,
                 user_id: userId,
                 status: 'running',
-                payload: { sender_id: senderId, recipient_id: recipientId, message: messageText }
+                payload: { sender_id: senderId, recipient_id: recipientId, message: messageText },
+                updated_at: new Date().toISOString()
             })
             .select('id')
             .maybeSingle()

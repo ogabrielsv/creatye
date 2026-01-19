@@ -15,8 +15,8 @@ export async function GET(request: NextRequest) {
     const q = searchParams.get('q');
 
     let query = supabase
-        .rpc('list_automations_with_exec_counts')
-        // .select('*') // rpc selects all by default
+        .from('automations_with_exec_count')
+        .select('*')
         .order('updated_at', { ascending: false });
 
     // Filter by Folder
