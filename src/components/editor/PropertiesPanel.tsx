@@ -1,7 +1,7 @@
 import { Node } from 'reactflow';
 import { useReactFlow } from 'reactflow';
 import { useState, useEffect } from 'react';
-import { X, Trash2, Save } from 'lucide-react';
+import { X, Trash2, Save, PlusCircle } from 'lucide-react';
 import {
     NodeDataSchema,
     MessageNodeDataSchema,
@@ -145,6 +145,137 @@ export default function PropertiesPanel({ selectedNode, onClose, onUpdate, onDel
                                 )}
                             </div>
                         </div>
+                    </div>
+                )}
+                {/* Cards / Carousel Config */}
+                {selectedNode.type === 'cards' && (
+                    <div className="space-y-6">
+                        <div className="border-l-2 border-brand-500 pl-3">
+                            <h4 className="text-sm font-bold text-foreground">Gerenciar Cartões</h4>
+                            <p className="text-xs text-muted-foreground">Adicione e edite os cards do carrossel.</p>
+                        </div>
+
+                        {(data.cards || []).map((card: any, cIdx: number) => (
+                            <div key={card.id || cIdx} className="border border-border rounded-lg p-3 bg-zinc-50 dark:bg-zinc-800/50 relative group">
+                                <div className="absolute top-2 right-2">
+                                    <button
+                                        onClick={() => {
+                                            const newCards = [...(data.cards || [])];
+                                            newCards.splice(cIdx, 1);
+                                            handleChange('cards', newCards);
+                                        }}
+                                        className="text-red-500 p-1 hover:bg-red-50 rounded"
+                                    >
+                                        <Trash2 size={14} />
+                                    </button>
+                                </div>
+
+                                <div className="space-y-3">
+                                    {/* Image */}
+                                    <div>
+                                        <label className="text-xs font-semibold text-muted-foreground">Imagem URL</label>
+                                        <input
+                                            className="w-full text-xs p-2 border rounded bg-background"
+                                            placeholder="https://..."
+                                            value={card.image || ''}
+                                            onChange={(e) => {
+                                                const newCards = [...(data.cards || [])];
+                                                newCards[cIdx] = { ...card, image: e.target.value };
+                                                handleChange('cards', newCards);
+                                            }}
+                                        />
+                                    </div>
+
+                                    {/* Title */}
+                                    <div>
+                                        <label className="text-xs font-semibold text-muted-foreground">Título</label>
+                                        <input
+                                            className="w-full text-sm p-2 border rounded bg-background font-medium"
+                                            placeholder="Título do card..."
+                                            value={card.title || ''}
+                                            onChange={(e) => {
+                                                const newCards = [...(data.cards || [])];
+                                                newCards[cIdx] = { ...card, title: e.target.value };
+                                                handleChange('cards', newCards);
+                                            }}
+                                        />
+                                    </div>
+
+                                    {/* Description */}
+                                    <div>
+                                        <label className="text-xs font-semibold text-muted-foreground">Descrição</label>
+                                        <textarea
+                                            className="w-full text-xs p-2 border rounded bg-background resize-none h-16"
+                                            placeholder="Descrição do card..."
+                                            value={card.description || ''}
+                                            onChange={(e) => {
+                                                const newCards = [...(data.cards || [])];
+                                                newCards[cIdx] = { ...card, description: e.target.value };
+                                                handleChange('cards', newCards);
+                                            }}
+                                        />
+                                    </div>
+
+                                    {/* Buttons for this Card */}
+                                    <div className="pt-2 border-t border-border">
+                                        <label className="text-xs font-bold text-muted-foreground mb-2 block">Botões ({card.buttons?.length || 0}/3)</label>
+                                        <div className="space-y-2">
+                                            {(card.buttons || []).map((btn: any, bIdx: number) => (
+                                                <div key={bIdx} className="flex gap-2 items-center">
+                                                    <input
+                                                        className="flex-1 text-xs p-1.5 border rounded bg-background"
+                                                        value={btn.label}
+                                                        onChange={(e) => {
+                                                            const newCards = [...(data.cards || [])];
+                                                            const newButtons = [...(card.buttons || [])];
+                                                            newButtons[bIdx] = { ...btn, label: e.target.value };
+                                                            newCards[cIdx] = { ...card, buttons: newButtons };
+                                                            handleChange('cards', newCards);
+                                                        }}
+                                                    />
+                                                    <button
+                                                        onClick={() => {
+                                                            const newCards = [...(data.cards || [])];
+                                                            const newButtons = [...(card.buttons || [])];
+                                                            newButtons.splice(bIdx, 1);
+                                                            newCards[cIdx] = { ...card, buttons: newButtons };
+                                                            handleChange('cards', newCards);
+                                                        }}
+                                                        className="text-red-400 hover:text-red-600"
+                                                    >
+                                                        <X size={14} />
+                                                    </button>
+                                                </div>
+                                            ))}
+                                            {(card.buttons?.length || 0) < 3 && (
+                                                <button
+                                                    onClick={() => {
+                                                        const newCards = [...(data.cards || [])];
+                                                        const newButtons = [...(card.buttons || []), { label: 'Botão', type: 'next' }];
+                                                        newCards[cIdx] = { ...card, buttons: newButtons };
+                                                        handleChange('cards', newCards);
+                                                    }}
+                                                    className="w-full py-1 text-xs border border-dashed rounded text-muted-foreground hover:bg-zinc-50"
+                                                >
+                                                    + Botão
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
+
+                        <button
+                            onClick={() => {
+                                const newCards = [...(data.cards || []), { id: crypto.randomUUID(), title: 'Novo Card', buttons: [] }];
+                                handleChange('cards', newCards);
+                            }}
+                            className="w-full py-2 bg-brand-50 text-brand-600 font-bold border border-brand-200 rounded-lg hover:bg-brand-100 transition-colors flex items-center justify-center gap-2"
+                        >
+                            <PlusCircle size={16} />
+                            Adicionar Cartão
+                        </button>
                     </div>
                 )}
 

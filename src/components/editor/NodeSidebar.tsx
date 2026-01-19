@@ -1,5 +1,5 @@
 import { DragEvent } from 'react';
-import { NODE_REGISTRY } from '@/../creatye-core/automation/nodeRegistry';
+import { NODE_REGISTRY } from '@/lib/automations/nodeRegistry';
 
 export function NodeSidebar() {
     const onDragStart = (event: DragEvent, nodeType: string) => {

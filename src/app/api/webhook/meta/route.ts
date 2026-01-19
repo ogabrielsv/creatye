@@ -173,10 +173,14 @@ async function handleMessageEvent(supabase: any, event: any) {
         console.log(`MATCHED_AUTOMATION: ${auto.id} (${auto.name})`)
 
         // 4) Execute
-        const sendAction = actions?.find((a: any) => a.kind === 'send_dm')
+        // Find FIRST runnable action (simplified for linear flow, real engine handles sequence)
+        // We prioritize rich actions if present, or just take the first action.
+        const action = actions?.[0]; // Just take first for now or better logic?
+        // Original code took find(kind=send_dm). Let's be more generic.
 
         let execId: string | null = null
 
+        // Log "running"
         const { data: exec, error: execErr } = await supabase
             .from('automation_executions')
             .insert({
@@ -191,28 +195,81 @@ async function handleMessageEvent(supabase: any, event: any) {
 
         if (execErr) {
             console.error('[EXEC_LOG] insert failed:', execErr)
-            // NÃO bloqueia a automação: continua sem log
         } else if (exec?.id) {
             execId = exec.id
         }
 
-        if (!sendAction || !sendAction.message_text) {
-            console.log('No send_dm action found.')
-            if (execId) {
-                await supabase.from('automation_executions').update({ status: 'failed', error: 'No send_dm action' }).eq('id', execId)
-            }
-            continue
+        if (!action) {
+            if (execId) await supabase.from('automation_executions').update({ status: 'failed', error: 'No action found' }).eq('id', execId);
+            break;
         }
 
-        console.log('SENDING_DM...')
+        console.log(`EXECUTING ACTION: ${action.kind} (ID: ${action.id})`)
+
         try {
-            await sendInstagramDM(accessToken, senderId, sendAction.message_text)
-            if (execId) {
-                await supabase.from('automation_executions').update({ status: 'success' }).eq('id', execId)
+            let content = null;
+
+            if (action.kind === 'send_dm') {
+                content = action.message_text;
             }
-            console.log('DM_SENT_OK')
+            else if (action.kind === 'cards') {
+                // Construct Generic Template for Carousel
+                // metadata.cards = [{ title, description, image, buttons: [] }]
+                const cards = action.metadata?.cards || [];
+                if (cards.length > 0) {
+                    const elements = cards.slice(0, 10).map((c: any) => ({
+                        title: c.title || 'Sem título',
+                        subtitle: c.description || '',
+                        image_url: c.image || undefined,
+                        buttons: (c.buttons || []).slice(0, 3).map((b: any) => {
+                            if (b.type === 'link') {
+                                return { type: 'web_url', url: b.url, title: b.label };
+                            }
+                            return { type: 'postback', title: b.label, payload: `NEXT_STEP` }; // TO-DO: Handle Postback
+                        })
+                    }));
+
+                    content = {
+                        attachment: {
+                            type: "template",
+                            payload: {
+                                template_type: "generic",
+                                elements: elements
+                            }
+                        }
+                    };
+                }
+            }
+            else if (action.kind === 'buttons') {
+                // Button Template (limited to 3 buttons, non-carousel)
+                const buttons = (action.metadata?.buttons || []).slice(0, 3).map((b: any) => {
+                    if (b.type === 'link') return { type: 'web_url', url: b.url, title: b.label };
+                    return { type: 'postback', title: b.label, payload: 'NEXT_STEP' };
+                });
+
+                content = {
+                    attachment: {
+                        type: "template",
+                        payload: {
+                            template_type: "button",
+                            text: action.message_text || "Escolha uma opção:",
+                            buttons: buttons
+                        }
+                    }
+                };
+            }
+
+            if (content) {
+                await sendInstagramDM(accessToken, senderId, content);
+                if (execId) await supabase.from('automation_executions').update({ status: 'success' }).eq('id', execId);
+                console.log('ACTION_SENT_OK');
+            } else {
+                console.log('Unknown action kind or empty content:', action.kind);
+                if (execId) await supabase.from('automation_executions').update({ status: 'failed', error: 'Unknown/Empty Action' }).eq('id', execId);
+            }
+
         } catch (err: any) {
-            console.error('DM_SENT_ERROR:', err)
+            console.error('ACTION_ERROR:', err)
             if (execId) {
                 await supabase.from('automation_executions')
                     .update({ status: 'failed', error: err.message || JSON.stringify(err) })

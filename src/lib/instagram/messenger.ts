@@ -1,15 +1,21 @@
 
-export async function sendInstagramDM(accessToken: string, recipientId: string, text: string) {
+export async function sendInstagramDM(accessToken: string, recipientId: string, content: string | any) {
     try {
         const url = `https://graph.instagram.com/v19.0/me/messages?access_token=${accessToken}`;
+
+        let messagePayload;
+        if (typeof content === 'string') {
+            messagePayload = { text: content };
+        } else {
+            // It's already a structured payload (attachment, template, etc.)
+            messagePayload = content;
+        }
 
         const payload = {
             recipient: {
                 id: recipientId
             },
-            message: {
-                text: text
-            }
+            message: messagePayload
         };
 
         const res = await fetch(url, {
@@ -23,6 +29,7 @@ export async function sendInstagramDM(accessToken: string, recipientId: string, 
         const data = await res.json();
 
         if (data.error) {
+            console.error('IG API Error:', JSON.stringify(data.error));
             throw new Error(data.error.message || JSON.stringify(data.error));
         }
 
