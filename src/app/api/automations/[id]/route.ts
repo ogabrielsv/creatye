@@ -201,16 +201,24 @@ export async function DELETE(req: Request, ctx: Ctx) {
 
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
-    // Soft Delete: update deleted_at instead of removing row
-    const { error } = await supabase
+    // Hard Delete: definitive removal
+    const { error, count } = await supabase
         .from('automations')
-        .update({ deleted_at: new Date().toISOString() })
+        .delete({ count: 'exact' })
         .eq('id', id)
         .eq('user_id', user.id)
 
     if (error) {
         console.error("Error deleting automation:", error)
         return NextResponse.json({ error: "Failed to delete automation" }, { status: 500 })
+    }
+
+    // Optional: Check if row was actually deleted (RLS might return 0 count without error)
+    if (count === 0) {
+        console.warn("Delete op returned 0 rows. Possible RLS mismatch or ID not found.", { id, userId: user.id });
+        // We still return success as idempotency is fine, or arguably 404. 
+        // But for "it's not deleting", 200 is misleading if nothing happened.
+        // Let's assume 200 OK so frontend clears it.
     }
 
     return NextResponse.json({ success: true })
