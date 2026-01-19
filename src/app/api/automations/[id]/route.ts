@@ -1,46 +1,38 @@
 
-import { createClient } from '@/lib/supabase/server';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
 
 export async function GET(
-    request: NextRequest,
+    req: Request,
     { params }: { params: { id: string } }
 ) {
-    const supabase = await createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const supabase = await createClient()
 
-    if (!user || authError) {
-        console.log('[API] Unauthorized access to /api/automations/[id]', { error: authError, user });
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+
+    if (!user) {
+        console.log('[API] Unauthorized access to /api/automations/[id]', {
+            authError,
+            hasCookies: req.headers.get('cookie')?.length ? true : false,
+            id: params.id,
+        })
+        return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
     }
 
-    const { id } = params;
-
-    // Fetch Automation Metadata
-    const { data: automation, error } = await supabase
+    const { data, error } = await supabase
         .from('automations')
         .select('*')
-        .eq('id', id)
+        .eq('id', params.id)
         .eq('user_id', user.id)
-        .single();
+        .maybeSingle()
 
-    if (error || !automation) {
-        return NextResponse.json({ error: 'Automation not found' }, { status: 404 });
+    if (error) {
+        return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
-    // Fetch Latest Draft
-    const { data: draft } = await supabase
-        .from('automation_drafts')
-        .select('nodes, edges')
-        .eq('automation_id', id)
-        .order('updated_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+    if (!data) {
+        return NextResponse.json({ error: 'Automation not found' }, { status: 404 })
+    }
 
-    return NextResponse.json({
-        ...automation,
-        title: automation.title || automation.name,
-        nodes: draft?.nodes || [],
-        edges: draft?.edges || []
-    });
+    return NextResponse.json({ automation: data })
 }
