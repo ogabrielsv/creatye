@@ -99,6 +99,7 @@ export async function GET(request: NextRequest) {
 
             // Standardized IG fields
             ig_user_id: finalIgUserId,
+            instagram_scoped_id: finalIgUserId, // Usually matches; if not, webhook fallback will fix it.
             ig_username: finalIgUsername,
             ig_name: finalIgName,
             ig_profile_picture_url: finalIgProfilePic,
