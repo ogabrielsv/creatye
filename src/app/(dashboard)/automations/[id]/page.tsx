@@ -20,18 +20,24 @@ import 'reactflow/dist/style.css';
 import { Play, Save, ArrowLeft, Settings, Loader2 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 
+// Legacy Nodes
 import StartNode from '@/components/automations/nodes/StartNode';
 import TriggerNode from '@/components/automations/nodes/TriggerNode';
 import ActionNode from '@/components/automations/nodes/ActionNode';
 import ConditionNode from '@/components/automations/nodes/ConditionNode';
-import BuilderSidebar from '@/components/automations/BuilderSidebar';
-import NodeConfigPanel from '@/components/automations/NodeConfigPanel';
 
+// New Nodes
+import { nodeTypes as editorNodeTypes } from '@/components/editor/nodes';
+import PropertiesPanel from '@/components/editor/PropertiesPanel';
+import BuilderSidebar from '@/components/automations/BuilderSidebar';
+
+// Merge Types
 const nodeTypes = {
-    start: StartNode,
+    ...editorNodeTypes, // message, buttons, cards, wait, condition_tag, etc.
+    start: StartNode,    // Keep legacy Start for now or use editorNodeTypes.start? Let's use legacy StartNode as it was visually matched.
     triggerNode: TriggerNode,
-    actionNode: ActionNode,
-    conditionNode: ConditionNode
+    actionNode: ActionNode,     // Legacy generic action
+    conditionNode: ConditionNode // Legacy generic condition
 };
 
 export default function AutomationBuilderPage() {
@@ -66,7 +72,7 @@ function AutomationBuilder() {
 
     async function fetchAutomation() {
         try {
-            const res = await fetch(`/api/automations/${id}`); // Assumes GET returns draft nodes/edges now
+            const res = await fetch(`/api/automations/${id}`);
             if (!res.ok) {
                 if (res.status === 404) {
                     alert('Automação não encontrada');
@@ -76,8 +82,6 @@ function AutomationBuilder() {
                 throw new Error('Failed to load');
             }
             const data = await res.json();
-
-            // Adjust response structure based on previous fixes (data is root)
             const automationData = data;
 
             setName(automationData.title || automationData.name);
@@ -86,7 +90,6 @@ function AutomationBuilder() {
                 setNodes(automationData.nodes);
                 setEdges(automationData.edges || []);
             } else {
-                // Initial Default State if empty
                 setNodes([
                     {
                         id: 'start-1',
@@ -149,7 +152,7 @@ function AutomationBuilder() {
     );
 
     const onNodeClick = useCallback((event: React.MouseEvent, node: Node) => {
-        if (node.type === 'start') return; // Start node has no config usually
+        if (node.type === 'start') return;
         setSelectedNode(node);
     }, []);
 
@@ -159,7 +162,7 @@ function AutomationBuilder() {
                 if (node.id === nodeId) {
                     node.data = { ...node.data, ...newData };
                     if (selectedNode?.id === nodeId) {
-                        setSelectedNode({ ...node }); // Update selected node view
+                        setSelectedNode({ ...node });
                     }
                 }
                 return node;
@@ -167,25 +170,34 @@ function AutomationBuilder() {
         );
     };
 
+    const handleDeleteNode = (nodeId: string) => {
+        setNodes((nds) => nds.filter((n) => n.id !== nodeId));
+        setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
+        setSelectedNode(null);
+    };
+
     const handleSave = async (status: 'draft' | 'published' = 'draft') => {
         setSaving(true);
         try {
-            // Using existing endpoint logic, but as PUT to automation details
-            // The prompt asked for: PUT /api/automations/[id] updating flow_data
+            const payload = {
+                nodes,
+                edges,
+                status,
+                // Also update trigger keyword if triggerNode exists
+                trigger: nodes.find(n => n.type === 'triggerNode')?.data?.keyword || undefined,
+                trigger_type: nodes.find(n => n.type === 'triggerNode')?.data?.triggerType || 'dm_keyword'
+            };
+
             const res = await fetch(`/api/automations/${id}`, {
                 method: 'PUT',
-                body: JSON.stringify({
-                    nodes,
-                    edges,
-                    status
-                }),
+                body: JSON.stringify(payload),
                 headers: { 'Content-Type': 'application/json' }
             });
 
             if (!res.ok) throw new Error('Failed to save');
 
             if (status === 'published') {
-                alert('Automação Publicada!'); // Simple feedback
+                alert('Automação Publicada!');
             }
 
         } catch (e) {
@@ -260,10 +272,11 @@ function AutomationBuilder() {
 
                     {/* Config Panel */}
                     {selectedNode && (
-                        <NodeConfigPanel
-                            node={selectedNode}
+                        <PropertiesPanel
+                            selectedNode={selectedNode}
                             onClose={() => setSelectedNode(null)}
-                            onChange={updateNodeData}
+                            onUpdate={updateNodeData}
+                            onDelete={handleDeleteNode}
                         />
                     )}
                 </div>

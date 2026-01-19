@@ -70,22 +70,30 @@ export async function PUT(req: Request, ctx: Ctx) {
     const body = await req.json()
     const { nodes, edges, status } = body
 
-    // 1. Update Status if changed
-    if (status) {
-        const { error: updateError } = await supabase
-            .from('automations')
-            .update({
-                status: status,
-                published_at: status === 'published' ? new Date().toISOString() : undefined,
-                updated_at: new Date().toISOString()
-            })
-            .eq('id', id)
-            .eq('user_id', user.id);
+    // 1. Update Status & Main Metadata
+    const triggerRaw = body.trigger || nodes?.find((n: any) => n.type === 'triggerNode')?.data?.keyword;
+    const triggerType = body.trigger_type || nodes?.find((n: any) => n.type === 'triggerNode')?.data?.triggerType || 'dm_keyword';
 
-        if (updateError) {
-            console.error("Error updating status:", updateError);
-            return NextResponse.json({ error: "Failed to update status" }, { status: 500 });
-        }
+    const updates: any = {
+        updated_at: new Date().toISOString()
+    };
+    if (status) {
+        updates.status = status;
+        if (status === 'published') updates.published_at = new Date().toISOString();
+    }
+    // Update trigger cache columns if provided
+    if (triggerRaw) updates.trigger = triggerRaw;
+    if (triggerType) updates.trigger_type = triggerType;
+
+    const { error: updateError } = await supabase
+        .from('automations')
+        .update(updates)
+        .eq('id', id)
+        .eq('user_id', user.id);
+
+    if (updateError) {
+        console.error("Error updating automation:", updateError);
+        return NextResponse.json({ error: "Failed to update automation" }, { status: 500 });
     }
 
     // 2. Save Draft (Nodes/Edges)
@@ -113,58 +121,83 @@ export async function PUT(req: Request, ctx: Ctx) {
         const triggersToInsert: any[] = []
         const actionsToInsert: any[] = []
 
-        for (const node of nodes) {
-            // Trigger node (keyword)
-            if (node.type === 'triggerNode') {
-                const keywordRaw = node.data?.keyword ?? node.data?.text ?? node.data?.value
-                const keyword = typeof keywordRaw === 'string' ? keywordRaw.trim() : ''
+        // Sort nodes by position or logic? 
+        // For linear execution, we can rely on edge connections, but simplistic parser might just grab all actions.
+        // We will just grab all action-type nodes.
 
-                if (keyword) {
-                    const matchMode = (node.data?.matchType || node.data?.match_mode || 'contains').toLowerCase()
+        for (const node of nodes) {
+            // Trigger
+            if (node.type === 'triggerNode') {
+                const keywordRaw = node.data?.keyword ?? node.data?.text ?? node.data?.value;
+                const matchMode = (node.data?.matchType || node.data?.match_mode || 'contains').toLowerCase();
+                const type = node.data?.triggerType || 'dm_keyword'; // dm_keyword, comment_keyword
+
+                if (keywordRaw && typeof keywordRaw === 'string' && keywordRaw.trim()) {
                     triggersToInsert.push({
                         automation_id: id,
                         user_id: user.id,
-                        trigger_type: 'keyword',
+                        trigger_type: type === 'comment_keyword' ? 'comment_keyword' : 'keyword', // Map to DB types
                         trigger_filter: {
-                            keyword,
+                            keyword: keywordRaw.trim(),
                             match_mode: matchMode,
-                            case_insensitive: true
-                        }
-                    })
+                            case_insensitive: true,
+                            source: type // store explicit source type in filter too
+                        },
+                        metadata: { triggerType: type }
+                    });
                 }
             }
 
-            // Action node (send dm)
+            // Legacy Action
             if (node.type === 'actionNode') {
-                const msgRaw = node.data?.message ?? node.data?.text ?? node.data?.value
-                const message_text = typeof msgRaw === 'string' ? msgRaw.trim() : ''
+                const msg = node.data?.message;
+                if (msg) actionsToInsert.push({ automation_id: id, user_id: user.id, kind: 'send_dm', message_text: msg });
+            }
 
-                if (message_text) {
+            // New: Message Node
+            if (node.type === 'message') {
+                const msg = node.data?.message;
+                if (msg) actionsToInsert.push({ automation_id: id, user_id: user.id, kind: 'send_dm', message_text: msg });
+            }
+
+            // New: Buttons Node
+            if (node.type === 'buttons') {
+                const msg = node.data?.message;
+                const btns = node.data?.buttons || [];
+                if (msg && btns.length > 0) {
                     actionsToInsert.push({
                         automation_id: id,
                         user_id: user.id,
-                        kind: 'send_dm',
-                        message_text
-                    })
+                        kind: 'buttons',
+                        message_text: msg,
+                        metadata: { buttons: btns }
+                    });
+                }
+            }
+
+            // New: Cards Node
+            if (node.type === 'cards') {
+                const cards = node.data?.cards || [];
+                if (cards.length > 0) {
+                    actionsToInsert.push({
+                        automation_id: id,
+                        user_id: user.id,
+                        kind: 'cards',
+                        // Message text fallback?
+                        message_text: 'Ver opções',
+                        metadata: { cards: cards }
+                    });
                 }
             }
         }
 
         // VALIDATION: Cannot publish without valid trigger and action
         if (triggersToInsert.length === 0 || actionsToInsert.length === 0) {
-            console.warn('[SYNC] Blocked publish: missing triggers or actions', { triggers: triggersToInsert.length, actions: actionsToInsert.length })
-            // Revert status to draft if validation fails? Or just error?
-            // User requested: return 400 error
-            // We should ideally revert the status update from step 1, but for now we just error.
-            // A better approach might be to validate BEFORE step 1. 
-            // However, following the instruction strictly to "Validation of publish" inside the sync block.
-
-            // Reverting status to draft to be safe
+            console.warn('[SYNC] Blocked publish: missing/invalid triggers or actions', { trig: triggersToInsert.length, act: actionsToInsert.length })
             await supabase.from('automations').update({ status: 'draft' }).eq('id', id)
-
             return NextResponse.json({
                 error: "cannot_publish_without_trigger_or_action",
-                details: "You need at least one valid trigger (keyword) and one action (message)."
+                details: "Configure pelo menos um Gatilho (com palavra-chave) e uma Ação (mensagem, botões ou cards)."
             }, { status: 400 })
         }
 
@@ -172,18 +205,16 @@ export async function PUT(req: Request, ctx: Ctx) {
         await supabase.from('automation_triggers').delete().eq('automation_id', id).eq('user_id', user.id)
         await supabase.from('automation_actions').delete().eq('automation_id', id).eq('user_id', user.id)
 
-        console.log('[SYNC] Inserting:', { triggers: triggersToInsert.length, actions: actionsToInsert.length })
-
         const insTrig = await supabase.from('automation_triggers').insert(triggersToInsert)
         if (insTrig.error) {
-            console.error('[SYNC] insert triggers error', insTrig.error)
-            return NextResponse.json({ error: "Failed to save triggers" }, { status: 500 })
+            console.error('[SYNC] triggers insert error:', insTrig.error);
+            return NextResponse.json({ error: "Failed to save triggers" }, { status: 500 });
         }
 
         const insAct = await supabase.from('automation_actions').insert(actionsToInsert)
         if (insAct.error) {
-            console.error('[SYNC] insert actions error', insAct.error)
-            return NextResponse.json({ error: "Failed to save actions" }, { status: 500 })
+            console.error('[SYNC] actions insert error:', insAct.error);
+            return NextResponse.json({ error: "Failed to save actions" }, { status: 500 });
         }
     }
 

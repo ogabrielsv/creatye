@@ -147,6 +147,66 @@ export default function PropertiesPanel({ selectedNode, onClose, onUpdate, onDel
                         </div>
                     </div>
                 )}
+
+                {/* Trigger Config */}
+                {selectedNode.type === 'triggerNode' && (
+                    <div className="space-y-4">
+                        <div className="border-l-2 border-purple-500 pl-3">
+                            <h4 className="text-sm font-bold text-foreground">Configurar Gatilho</h4>
+                            <p className="text-xs text-muted-foreground">Defina como essa automação inicia.</p>
+                        </div>
+
+                        <div>
+                            <label className="block text-xs font-semibold text-muted-foreground mb-1">Tipo de Gatilho</label>
+                            <select
+                                className="w-full text-sm p-2 border rounded bg-background"
+                                value={data.triggerType || 'dm_keyword'}
+                                onChange={(e) => handleChange('triggerType', e.target.value)}
+                            >
+                                <option value="dm_keyword">Palavra-chave no Direct (DM)</option>
+                                <option value="comment_keyword">Palavra-chave nos Comentários</option>
+                                <option value="story_mention">Menção no Story (Qualquer)</option>
+                            </select>
+                        </div>
+
+                        {(data.triggerType === 'dm_keyword' || data.triggerType === 'comment_keyword' || !data.triggerType) && (
+                            <>
+                                <div>
+                                    <label className="block text-xs font-semibold text-muted-foreground mb-1">Palavra-Chave</label>
+                                    <input
+                                        type="text"
+                                        className="w-full text-sm p-2 border rounded bg-background"
+                                        placeholder="Ex: eu quero"
+                                        value={data.keyword || ''}
+                                        onChange={(e) => handleChange('keyword', e.target.value)}
+                                    />
+                                    <p className="text-[10px] text-muted-foreground mt-1">
+                                        Pode ser uma frase ou palavra única.
+                                    </p>
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-semibold text-muted-foreground mb-1">Correspondência</label>
+                                    <select
+                                        className="w-full text-sm p-2 border rounded bg-background"
+                                        value={data.matchType || 'contains'}
+                                        onChange={(e) => handleChange('matchType', e.target.value)}
+                                    >
+                                        <option value="contains">Contém a palavra</option>
+                                        <option value="exact">É exatamente a palavra</option>
+                                    </select>
+                                </div>
+                            </>
+                        )}
+
+                        {data.triggerType === 'comment_keyword' && (
+                            <div className="p-3 bg-blue-50 text-blue-800 text-xs rounded border border-blue-100">
+                                💡 A automação responderá ao comentário publicamente (se configurado) ou enviará um Direct.
+                                Certifique-se de conectar a ação desejada.
+                            </div>
+                        )}
+                    </div>
+                )}
+
                 {/* Cards / Carousel Config */}
                 {selectedNode.type === 'cards' && (
                     <div className="space-y-6">

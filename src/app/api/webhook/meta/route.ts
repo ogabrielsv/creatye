@@ -28,10 +28,20 @@ export async function POST(request: Request) {
         if (body.object === 'instagram') {
             const supabase = createAdminClient()
             for (const entry of body.entry) {
-                const messagingEvents = entry.messaging || []
-                for (const event of messagingEvents) {
-                    if (event.message && !event.message.is_echo) {
-                        await handleMessageEvent(supabase, event)
+                // 1) Handle Messaging (DMs)
+                if (entry.messaging) {
+                    for (const event of entry.messaging) {
+                        if (event.message && !event.message.is_echo) {
+                            await handleMessageEvent(supabase, event)
+                        }
+                    }
+                }
+                // 2) Handle Changes (Comments)
+                if (entry.changes) {
+                    for (const change of entry.changes) {
+                        if (change.field === 'comments' || change.field === 'feed') {
+                            await handleCommentEvent(supabase, entry.id, change.value)
+                        }
                     }
                 }
             }
@@ -44,6 +54,139 @@ export async function POST(request: Request) {
     }
 }
 
+async function handleCommentEvent(supabase: any, accountId: string, val: any) {
+    if (!val || !val.text || !val.from?.id) return;
+
+    const messageText = val.text;
+    const senderId = val.from.id; // User who commented
+
+    console.log(`[WEBHOOK] Comment received: "${messageText}" from ${senderId} on acct ${accountId}`);
+
+    // 1. Get Access Token for this Account
+    const { data: connection } = await supabase
+        .from('ig_connections')
+        .select('*')
+        .eq('instagram_business_account_id', accountId)
+        .maybeSingle();
+
+    if (!connection) {
+        console.log(`[WEBHOOK] No connection found for account ${accountId}`);
+        return;
+    }
+
+    const accessToken = connection.access_token;
+    const userId = connection.user_id;
+
+    // 2. Find matching automation (Trigger Type = 'comment_keyword')
+    const cleanText = messageText.trim().toLowerCase();
+
+    // Using the 'automations' table and 'trigger_type' column
+    const { data: automations, error: autoError } = await supabase
+        .from('automations')
+        .select(`
+            id, 
+            name, 
+            trigger, 
+            trigger_type
+        `)
+        .eq('user_id', userId)
+        .eq('status', 'published')
+        .is('deleted_at', null)
+        .eq('trigger_type', 'comment_keyword') // IMPORTANT: Filter by comment type only
+
+    if (autoError) {
+        console.error('[WEBHOOK] Error fetching automations for comment:', autoError);
+        return;
+    }
+
+    if (!automations || automations.length === 0) return;
+
+    // Filter in memory for robust matching
+    const matchedAuto = automations.find((a: any) => {
+        const t = (a.trigger || '').toLowerCase();
+        return cleanText.includes(t);
+    });
+
+    if (!matchedAuto) return;
+
+    console.log(`[WEBHOOK] Matched Comment Custom Auto: ${matchedAuto.id}`);
+
+    // 3. Fetch Actions
+    const { data: actions } = await supabase
+        .from('automation_actions')
+        .select('*')
+        .eq('automation_id', matchedAuto.id)
+        .order('created_at', { ascending: true });
+
+    if (!actions || actions.length === 0) return;
+
+    const action = actions[0];
+
+    // Log Execution
+    let execId = null;
+    const { data: exec } = await supabase.from('automation_executions').insert({
+        automation_id: matchedAuto.id,
+        user_id: userId,
+        status: 'running',
+        payload: { source: 'comment', text: messageText, sender_id: senderId },
+        updated_at: new Date().toISOString()
+    }).select('id').maybeSingle();
+    if (exec) execId = exec.id;
+
+    try {
+        let content = null;
+        if (action.kind === 'send_dm') content = action.message_text;
+        else if (action.kind === 'buttons') {
+            const buttons = (action.metadata?.buttons || []).slice(0, 3).map((b: any) => {
+                if (b.type === 'link') return { type: 'web_url', url: b.url, title: b.label };
+                return { type: 'postback', title: b.label, payload: 'NEXT_STEP' };
+            });
+            content = {
+                attachment: {
+                    type: "template",
+                    payload: {
+                        template_type: "button",
+                        text: action.message_text || "Escolha uma opção:",
+                        buttons: buttons
+                    }
+                }
+            };
+        }
+        else if (action.kind === 'cards') {
+            const cards = action.metadata?.cards || [];
+            if (cards.length > 0) {
+                const elements = cards.slice(0, 10).map((c: any) => ({
+                    title: c.title || 'Sem título',
+                    subtitle: c.description || '',
+                    image_url: c.image || undefined,
+                    buttons: (c.buttons || []).slice(0, 3).map((b: any) => {
+                        if (b.type === 'link') return { type: 'web_url', url: b.url, title: b.label };
+                        return { type: 'postback', title: b.label, payload: 'NEXT_STEP' };
+                    })
+                }));
+                content = {
+                    attachment: {
+                        type: "template",
+                        payload: {
+                            template_type: "generic",
+                            elements: elements
+                        }
+                    }
+                };
+            }
+        }
+
+        if (content) {
+            await sendInstagramDM(accessToken, senderId, content);
+            if (execId) await supabase.from('automation_executions').update({ status: 'success' }).eq('id', execId);
+            console.log('[WEBHOOK] Comment Reply DM Sent OK');
+        }
+    } catch (err: any) {
+        console.error('[WEBHOOK] Comment Reply Error:', err);
+        if (execId) await supabase.from('automation_executions').update({ status: 'failed', error: err.message }).eq('id', execId);
+    }
+}
+
 async function handleMessageEvent(supabase: any, event: any) {
     const senderId = event.sender?.id
     const recipientId = event.recipient?.id
@@ -53,46 +196,23 @@ async function handleMessageEvent(supabase: any, event: any) {
 
     console.log('[DM] sender:', senderId, 'recipient:', recipientId, 'text:', messageText)
 
-    // 1) Find connection (Robust Strategy with Logs)
+    // 1) Find connection (Robust Strategy)
     let connection = null
-
-    // Try by scoped ID first
-    let { data: connScoped } = await supabase
-        .from('ig_connections')
-        .select('*')
-        .eq('instagram_scoped_id', recipientId)
-        .maybeSingle()
+    let { data: connScoped } = await supabase.from('ig_connections').select('*').eq('instagram_scoped_id', recipientId).maybeSingle()
 
     if (connScoped) {
         connection = connScoped
-        console.log('CONNECTION_FOUND_BY_SCOPED_ID:', connection.id)
     } else {
-        // Try by legacy ig_user_id
-        let { data: connLegacy } = await supabase
-            .from('ig_connections')
-            .select('*')
-            .eq('ig_user_id', recipientId)
-            .maybeSingle()
-
+        let { data: connLegacy } = await supabase.from('ig_connections').select('*').eq('ig_user_id', recipientId).maybeSingle()
         if (connLegacy) {
             connection = connLegacy
-            console.log('CONNECTION_FOUND_BY_IG_USER_ID:', connection.id)
-            // Self-heal
             await supabase.from('ig_connections').update({ instagram_scoped_id: recipientId }).eq('id', connection.id)
         } else {
             // Auto-link heuristic
-            console.log('[DM] No connection found, trying auto-link...')
-            const { data: latest } = await supabase
-                .from('ig_connections')
-                .select('*')
-                .order('created_at', { ascending: false })
-                .limit(1)
-                .maybeSingle()
-
+            const { data: latest } = await supabase.from('ig_connections').select('*').order('created_at', { ascending: false }).limit(1).maybeSingle()
             if (latest) {
                 await supabase.from('ig_connections').update({ instagram_scoped_id: recipientId }).eq('id', latest.id)
                 connection = { ...latest, instagram_scoped_id: recipientId }
-                console.log('CONNECTION_AUTO_LINKED:', connection.id)
             }
         }
     }
@@ -105,21 +225,16 @@ async function handleMessageEvent(supabase: any, event: any) {
     const userId = connection.user_id
     const accessToken = connection.access_token
 
-    // 2) Fetch Automations (Manual Query)
-    const { data: automations, error: autoError } = await supabase
+    // 2) Fetch Automations (Type = 'dm_keyword' OR default null/keyword)
+    // We want to avoid 'comment_keyword' types triggering on DM
+    const { data: automations } = await supabase
         .from('automations')
-        .select('id, name, status, type, user_id')
+        .select('id, name, status, trigger, trigger_type, user_id')
         .eq('user_id', userId)
         .eq('status', 'published')
-        .eq('type', 'dm')
         .is('deleted_at', null)
-
-    if (autoError) {
-        console.log('AUTOMATIONS_QUERY_ERROR:', autoError)
-        return
-    }
-
-    console.log(`AUTOMATIONS_FOUND: ${automations?.length || 0} for user ${userId}`)
+        // trigger_type should be null OR 'keyword' OR 'dm_keyword'. NOT 'comment_keyword'
+        .neq('trigger_type', 'comment_keyword')
 
     if (!automations || automations.length === 0) return
 
@@ -129,155 +244,93 @@ async function handleMessageEvent(supabase: any, event: any) {
 
     // 3) Iterate Automations
     for (const auto of automations) {
-        console.log(`Testing automation: ${auto.name} (${auto.id})`)
+        const triggerKeyword = (auto.trigger || '').toLowerCase();
+        if (!triggerKeyword) continue;
 
-        // Fetch Triggers
-        const { data: triggers } = await supabase
-            .from('automation_triggers')
-            .select('*')
-            .eq('automation_id', auto.id)
+        // Default 'contains' logic
+        if (normalizedMsg.includes(triggerKeyword)) {
+            console.log(`MATCHED_DM_AUTOMATION: ${auto.id} (${auto.name})`)
 
-        // Fetch Actions
-        const { data: actions } = await supabase
-            .from('automation_actions')
-            .select('*')
-            .eq('automation_id', auto.id)
+            // Fetch Actions
+            const { data: actions } = await supabase
+                .from('automation_actions')
+                .select('*')
+                .eq('automation_id', auto.id)
+                .order('created_at', { ascending: true })
 
-        console.log(`TRIGGERS_FOUND: ${triggers?.length || 0}, ACTIONS_FOUND: ${actions?.length || 0}`)
+            if (!actions || actions.length === 0) continue
 
-        // Check Matches
-        if (!triggers || triggers.length === 0) continue
+            const action = actions[0];
 
-        const matchedTrigger = triggers.find((t: any) => {
-            const type = (t.trigger_type || '').toLowerCase()
-            if (type !== 'keyword') return false
+            let execId: string | null = null
+            const { data: exec } = await supabase
+                .from('automation_executions')
+                .insert({
+                    automation_id: auto.id,
+                    user_id: userId,
+                    status: 'running',
+                    payload: { sender_id: senderId, recipient_id: recipientId, message: messageText },
+                    updated_at: new Date().toISOString()
+                })
+                .select('id')
+                .maybeSingle()
 
-            const filter = t.trigger_filter || {}
-            const keyword = String(filter.keyword || '').trim().toLowerCase()
-            if (!keyword) return false
+            if (exec?.id) execId = exec.id
 
-            const matchMode = String(filter.match_mode || 'contains').toLowerCase()
-            const isExact = matchMode === 'exact' || matchMode === 'equals'
+            console.log(`EXECUTING ACTION: ${action.kind} (ID: ${action.id})`)
 
-            console.log(`Checking trigger: keyword="${keyword}", mode="${matchMode}" against msg="${normalizedMsg}"`)
-
-            if (isExact) return normalizedMsg === keyword
-            return normalizedMsg.includes(keyword)
-        })
-
-        if (!matchedTrigger) {
-            console.log('No trigger matched.')
-            continue
-        }
-
-        console.log(`MATCHED_AUTOMATION: ${auto.id} (${auto.name})`)
-
-        // 4) Execute
-        // Find FIRST runnable action (simplified for linear flow, real engine handles sequence)
-        // We prioritize rich actions if present, or just take the first action.
-        const action = actions?.[0]; // Just take first for now or better logic?
-        // Original code took find(kind=send_dm). Let's be more generic.
-
-        let execId: string | null = null
-
-        // Log "running"
-        const { data: exec, error: execErr } = await supabase
-            .from('automation_executions')
-            .insert({
-                automation_id: auto.id,
-                user_id: userId,
-                status: 'running',
-                payload: { sender_id: senderId, recipient_id: recipientId, message: messageText },
-                updated_at: new Date().toISOString()
-            })
-            .select('id')
-            .maybeSingle()
-
-        if (execErr) {
-            console.error('[EXEC_LOG] insert failed:', execErr)
-        } else if (exec?.id) {
-            execId = exec.id
-        }
-
-        if (!action) {
-            if (execId) await supabase.from('automation_executions').update({ status: 'failed', error: 'No action found' }).eq('id', execId);
-            break;
-        }
-
-        console.log(`EXECUTING ACTION: ${action.kind} (ID: ${action.id})`)
-
-        try {
-            let content = null;
-
-            if (action.kind === 'send_dm') {
-                content = action.message_text;
-            }
-            else if (action.kind === 'cards') {
-                // Construct Generic Template for Carousel
-                // metadata.cards = [{ title, description, image, buttons: [] }]
-                const cards = action.metadata?.cards || [];
-                if (cards.length > 0) {
-                    const elements = cards.slice(0, 10).map((c: any) => ({
-                        title: c.title || 'Sem título',
-                        subtitle: c.description || '',
-                        image_url: c.image || undefined,
-                        buttons: (c.buttons || []).slice(0, 3).map((b: any) => {
-                            if (b.type === 'link') {
-                                return { type: 'web_url', url: b.url, title: b.label };
-                            }
-                            return { type: 'postback', title: b.label, payload: `NEXT_STEP` }; // TO-DO: Handle Postback
-                        })
-                    }));
-
+            try {
+                let content = null;
+                if (action.kind === 'send_dm') content = action.message_text;
+                else if (action.kind === 'buttons') { // Button Template matching
+                    const buttons = (action.metadata?.buttons || []).slice(0, 3).map((b: any) => {
+                        if (b.type === 'link') return { type: 'web_url', url: b.url, title: b.label };
+                        return { type: 'postback', title: b.label, payload: 'NEXT_STEP' };
+                    });
                     content = {
                         attachment: {
                             type: "template",
                             payload: {
-                                template_type: "generic",
-                                elements: elements
+                                template_type: "button",
+                                text: action.message_text || "Escolha:",
+                                buttons: buttons
                             }
                         }
                     };
-                }
-            }
-            else if (action.kind === 'buttons') {
-                // Button Template (limited to 3 buttons, non-carousel)
-                const buttons = (action.metadata?.buttons || []).slice(0, 3).map((b: any) => {
-                    if (b.type === 'link') return { type: 'web_url', url: b.url, title: b.label };
-                    return { type: 'postback', title: b.label, payload: 'NEXT_STEP' };
-                });
-
-                content = {
-                    attachment: {
-                        type: "template",
-                        payload: {
-                            template_type: "button",
-                            text: action.message_text || "Escolha uma opção:",
-                            buttons: buttons
-                        }
+                } else if (action.kind === 'cards') { // Cards Template matching
+                    const cards = action.metadata?.cards || [];
+                    if (cards.length > 0) {
+                        const elements = cards.slice(0, 10).map((c: any) => ({
+                            title: c.title || 'Sem título',
+                            subtitle: c.description || '',
+                            image_url: c.image || undefined,
+                            buttons: (c.buttons || []).slice(0, 3).map((b: any) => {
+                                if (b.type === 'link') return { type: 'web_url', url: b.url, title: b.label };
+                                return { type: 'postback', title: b.label, payload: 'NEXT_STEP' };
+                            })
+                        }));
+                        content = {
+                            attachment: {
+                                type: "template",
+                                payload: {
+                                    template_type: "generic",
+                                    elements: elements
+                                }
+                            }
+                        };
                     }
-                };
-            }
+                }
 
-            if (content) {
-                await sendInstagramDM(accessToken, senderId, content);
-                if (execId) await supabase.from('automation_executions').update({ status: 'success' }).eq('id', execId);
-                console.log('ACTION_SENT_OK');
-            } else {
-                console.log('Unknown action kind or empty content:', action.kind);
-                if (execId) await supabase.from('automation_executions').update({ status: 'failed', error: 'Unknown/Empty Action' }).eq('id', execId);
+                if (content) {
+                    await sendInstagramDM(accessToken, senderId, content);
+                    if (execId) await supabase.from('automation_executions').update({ status: 'success' }).eq('id', execId);
+                    console.log('Action Sent OK match');
+                }
+            } catch (err: any) {
+                console.error('ACTION_ERROR:', err)
+                if (execId) await supabase.from('automation_executions').update({ status: 'failed', error: err.message }).eq('id', execId);
             }
-
-        } catch (err: any) {
-            console.error('ACTION_ERROR:', err)
-            if (execId) {
-                await supabase.from('automation_executions')
-                    .update({ status: 'failed', error: err.message || JSON.stringify(err) })
-                    .eq('id', execId)
-            }
+            break; // Stop after first match
         }
-
-        // Stop after first match
-        break
     }
 }
