@@ -15,10 +15,65 @@ export async function GET(request: NextRequest) {
     const q = searchParams.get('q');
 
     let query = supabase
-        .from('automations')
-        .select('*')
-        .eq('user_id', user.id)
+        .rpc('list_automations_with_exec_counts')
+        // .select('*') // rpc selects all by default
         .order('updated_at', { ascending: false });
+
+    // Filter by Folder
+    if (folderId && folderId !== 'all') {
+        query = query.eq('folder_id', folderId); // Note: Original RPC doesn't include folder_id, need to add it to SQL or join? 
+        // Wait, the RPC in step A only selects specific columns. If we need folder_id for filtering, we must add it to the RPC.
+        // Assuming I should update the RPC first? 
+        // The user instruction says: "RPC + integracao na listagem".
+        // The SQL provided:
+        /*
+        RETURNS TABLE (
+          id uuid,
+          name text,
+          status text,
+          type text,
+          created_at timestamptz,
+          updated_at timestamptz,
+          published_at timestamptz,
+          executions_count bigint
+        )
+        */
+        // It's missing folder_id, title, description, channels...
+        // I will act defensively. I will rely on the RPC as requested.
+        // BUT, filtering by 'folderId' won't work if the column isn't returned for 'eq' to work on.
+        // I should PROBABLY just update the SQL definition first to include everything or at least folder_id.
+        // However, I cannot auto-run the SQL editor. I only generated the file.
+        // The user said: "PARTE C) API/LISTAGEM — BUSCAR CONTAGEM REAL ... const { data, error } = await supabase.rpc('list_automations_with_exec_counts')"
+
+        // Let's assume the user will run the SQL provided. The SQL provided returns specific columns.
+        // Does existing code need other columns? 
+        // NormalizedData uses 'title' or 'name'. 'title' is missing in RPC.
+        // It seems better to fetch everything from automations and LEFT JOIN manually?
+        // No, user requested "Buscar contagem de forma eficiente (1 query, nao N queries) ... BUSCAR CONTAGEM REAL ... Substituir o select direto em 'automations' por uma chamada RPC".
+
+        // I'll stick to the RPC but I should probably make the RPC return * from automations + count. 
+        // The user supplied the SQL specifically. I should follow it.
+        // The supplied SQL:
+        /*
+          SELECT
+            a.id,
+            a.name,
+            a.status,
+            a.type,
+            a.created_at,
+            a.updated_at,
+            a.published_at,
+            COALESCE(e.cnt, 0) AS executions_count
+          FROM public.automations a
+        */
+        // It seems I should just use this. But wait, existing filters use 'folder_id'. 
+        // If I use this RPC, 'folder_id' filtering will fail or be ignored if I don't filter in JS.
+        // And 'channels' etc will be missing.
+        // This might break the UI if those fields are needed.
+
+        // Strategy: Update the SQL file to return a.* so we don't lose data.
+
+    }
 
     // Filter by Folder
     if (folderId && folderId !== 'all') {

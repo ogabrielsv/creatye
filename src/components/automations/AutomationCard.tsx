@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Automation } from '@/../creatye-core/automation/types';
+import { Automation } from '@/types/automation';
 import Link from 'next/link';
 import { Play, MoreVertical, Edit, Trash2, Box, Instagram, MessageCircle } from 'lucide-react';
 
@@ -77,7 +77,7 @@ export function AutomationCard({ automation, onDelete }: AutomationCardProps) {
             <div className="flex items-center gap-4 text-sm text-zinc-500 mb-6">
                 <div className="flex items-center gap-1.5">
                     <Play size={14} />
-                    <span className="font-medium text-zinc-700">{automation.executions}</span>
+                    <span className="font-medium text-zinc-700">{automation.executions_count ?? 0}</span>
                     <span className="text-xs">execuções</span>
                 </div>
 

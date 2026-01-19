@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Automation, Folder as FolderType } from '@/../creatye-core/automation/types';
+import { Automation, Folder as FolderType } from '@/types/automation';
 import { AutomationList } from '@/components/automations/AutomationList';
 import { Plus, Search, Folder, Trash2, Instagram, X } from 'lucide-react';
 import { useRouter } from 'next/navigation';

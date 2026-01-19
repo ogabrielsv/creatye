@@ -1,6 +1,6 @@
 'use client';
 
-import { Automation } from '@/../creatye-core/automation/types';
+import { Automation } from '@/types/automation';
 import { AutomationCard } from './AutomationCard';
 import { Plus } from 'lucide-react';
 
