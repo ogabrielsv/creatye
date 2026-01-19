@@ -89,8 +89,6 @@ export async function PUT(req: Request, ctx: Ctx) {
     }
 
     // 2. Save Draft (Nodes/Edges)
-    // Upsert logic for automation_drafts
-    // Check if draft exists first or just upsert with onConflict on automation_id
     const { error } = await supabase
         .from('automation_drafts')
         .upsert({
@@ -104,6 +102,52 @@ export async function PUT(req: Request, ctx: Ctx) {
     if (error) {
         console.error("Error saving draft:", error)
         return NextResponse.json({ error: "Failed to save draft" }, { status: 500 })
+    }
+
+    // 3. Sync Triggers/Actions if Published
+    // This supports the execution engine which reads from relational tables
+    if (status === 'published' && nodes && nodes.length > 0) {
+        // Clear existing config
+        await supabase.from('automation_triggers').delete().eq('automation_id', id);
+        await supabase.from('automation_actions').delete().eq('automation_id', id);
+
+        const triggersToInsert = [];
+        const actionsToInsert = [];
+
+        for (const node of nodes) {
+            // Trigger Nodes
+            if (node.type === 'triggerNode' && node.data?.keyword) {
+                triggersToInsert.push({
+                    automation_id: id,
+                    user_id: user.id,
+                    kind: 'keyword',
+                    keyword: node.data.keyword,
+                    match_mode: node.data.matchType || 'contains',
+                    case_insensitive: true
+                });
+            }
+            // Action Nodes
+            // Note: In a real graph, we'd traverse edges to ensure connected path.
+            // For this MVP, we just collect all Action nodes.
+            if (node.type === 'actionNode' && node.data?.message) {
+                actionsToInsert.push({
+                    automation_id: id,
+                    user_id: user.id,
+                    kind: 'send_dm',
+                    message_text: node.data.message
+                });
+            }
+        }
+
+        if (triggersToInsert.length > 0) {
+            const { error: trigErr } = await supabase.from('automation_triggers').insert(triggersToInsert);
+            if (trigErr) console.error("Error syncing triggers:", trigErr);
+        }
+
+        if (actionsToInsert.length > 0) {
+            const { error: actErr } = await supabase.from('automation_actions').insert(actionsToInsert);
+            if (actErr) console.error("Error syncing actions:", actErr);
+        }
     }
 
     return NextResponse.json({ success: true })
