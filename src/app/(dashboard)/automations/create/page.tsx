@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Check, Folder, X } from 'lucide-react';
 import Link from 'next/link';
+import { PostSelector } from './PostSelector';
 
 // Local definitions to ensure stability
 const CHANNEL_LIST = ['dm', 'comment_feed', 'comment_live', 'story_mention', 'story_reply'];
@@ -30,6 +31,7 @@ interface TriggerConfig {
     keywords: string[];
     matchType: 'contains' | 'exact' | 'starts_with';
     postOption: 'any_post' | 'specific_post';
+    targetMediaId?: string;
 }
 
 export default function CreateAutomationPage() {
@@ -297,6 +299,16 @@ export default function CreateAutomationPage() {
                                     <option key={key} value={key}>{label}</option>
                                 ))}
                             </select>
+
+                            {/* Specific Post Selection UI */}
+                            {triggerConfig.postOption === 'specific_post' && (
+                                <div className="mt-4">
+                                    <PostSelector
+                                        onSelect={(mediaId) => setTriggerConfig(prev => ({ ...prev, targetMediaId: mediaId }))}
+                                        selectedId={triggerConfig.targetMediaId}
+                                    />
+                                </div>
+                            )}
                         </div>
                     )}
 
