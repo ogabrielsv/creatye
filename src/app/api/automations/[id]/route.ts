@@ -72,14 +72,20 @@ export async function PUT(req: Request, ctx: Ctx) {
 
     // 1. Update Status if changed
     if (status) {
-        await supabase
+        const { error: updateError } = await supabase
             .from('automations')
             .update({
                 status: status,
-                published_at: status === 'published' ? new Date().toISOString() : undefined
+                published_at: status === 'published' ? new Date().toISOString() : undefined,
+                updated_at: new Date().toISOString()
             })
             .eq('id', id)
-            .eq('user_id', user.id)
+            .eq('user_id', user.id);
+
+        if (updateError) {
+            console.error("Error updating status:", updateError);
+            return NextResponse.json({ error: "Failed to update status" }, { status: 500 });
+        }
     }
 
     // 2. Save Draft (Nodes/Edges)
