@@ -105,35 +105,25 @@ export async function PUT(req: Request, ctx: Ctx) {
     }
 
     // 3. Sync Triggers/Actions if Published
-    // This supports the execution engine which reads from relational tables
-    if (status === 'published' && Array.isArray(nodes) && nodes.length > 0) {
-        // Clear existing config (scoped by user to avoid RLS issues)
-        const delTrig = await supabase
-            .from('automation_triggers')
-            .delete()
-            .eq('automation_id', id)
-            .eq('user_id', user.id)
+    if (status === 'published' && nodes && nodes.length > 0) {
+        // Limpa config anterior
+        const delTrig = await supabase.from('automation_triggers').delete().eq('automation_id', id).eq('user_id', user.id)
+        if (delTrig.error) console.error('[SYNC] delete triggers error', delTrig.error)
 
-        if (delTrig.error) console.error('[SYNC] delete triggers error:', delTrig.error)
-
-        const delAct = await supabase
-            .from('automation_actions')
-            .delete()
-            .eq('automation_id', id)
-            .eq('user_id', user.id)
-
-        if (delAct.error) console.error('[SYNC] delete actions error:', delAct.error)
+        const delAct = await supabase.from('automation_actions').delete().eq('automation_id', id).eq('user_id', user.id)
+        if (delAct.error) console.error('[SYNC] delete actions error', delAct.error)
 
         const triggersToInsert: any[] = []
         const actionsToInsert: any[] = []
 
         for (const node of nodes) {
-            // TRIGGER NODE
-            if (node?.type === 'triggerNode') {
-                const keyword = String(node?.data?.keyword || '').trim()
+            // Trigger node (keyword)
+            if (node.type === 'triggerNode') {
+                const keywordRaw = node.data?.keyword ?? node.data?.text ?? node.data?.value
+                const keyword = typeof keywordRaw === 'string' ? keywordRaw.trim() : ''
+
                 if (keyword) {
-                    const matchMode =
-                        String(node?.data?.matchType || node?.data?.match_mode || 'contains').toLowerCase()
+                    const matchMode = (node.data?.matchType || node.data?.match_mode || 'contains').toLowerCase()
 
                     triggersToInsert.push({
                         automation_id: id,
@@ -142,46 +132,42 @@ export async function PUT(req: Request, ctx: Ctx) {
                         trigger_filter: {
                             keyword,
                             match_mode: matchMode,
-                            case_insensitive: true,
-                        },
+                            case_insensitive: true
+                        }
                     })
                 }
             }
 
-            // ACTION NODE
-            if (node?.type === 'actionNode') {
-                const message = String(node?.data?.message || '').trim()
-                if (message) {
+            // Action node (send dm)
+            if (node.type === 'actionNode') {
+                const msgRaw = node.data?.message ?? node.data?.text ?? node.data?.value
+                const message_text = typeof msgRaw === 'string' ? msgRaw : ''
+
+                if (message_text) {
                     actionsToInsert.push({
                         automation_id: id,
                         user_id: user.id,
                         kind: 'send_dm',
-                        message_text: message,
+                        message_text
                     })
                 }
             }
         }
 
-        console.log('[SYNC] prepared:', {
-            automation_id: id,
-            triggers: triggersToInsert.length,
-            actions: actionsToInsert.length,
-        })
+        console.log('[SYNC] triggersToInsert=', triggersToInsert.length, 'actionsToInsert=', actionsToInsert.length)
 
         if (triggersToInsert.length > 0) {
             const insTrig = await supabase.from('automation_triggers').insert(triggersToInsert)
-            if (insTrig.error) console.error('[SYNC] insert triggers error:', insTrig.error)
-            else console.log('[SYNC] triggers inserted OK')
+            if (insTrig.error) console.error('[SYNC] insert triggers error', insTrig.error)
         } else {
-            console.log('[SYNC] no triggers to insert')
+            console.warn('[SYNC] No triggers to insert. Check node.data.keyword in TriggerNode.')
         }
 
         if (actionsToInsert.length > 0) {
             const insAct = await supabase.from('automation_actions').insert(actionsToInsert)
-            if (insAct.error) console.error('[SYNC] insert actions error:', insAct.error)
-            else console.log('[SYNC] actions inserted OK')
+            if (insAct.error) console.error('[SYNC] insert actions error', insAct.error)
         } else {
-            console.log('[SYNC] no actions to insert')
+            console.warn('[SYNC] No actions to insert. Check node.data.message in ActionNode.')
         }
     }
 
