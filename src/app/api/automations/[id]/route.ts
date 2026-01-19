@@ -201,10 +201,10 @@ export async function DELETE(req: Request, ctx: Ctx) {
 
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
-    // Delete automation (cascade should handle related tables)
+    // Soft Delete: update deleted_at instead of removing row
     const { error } = await supabase
         .from('automations')
-        .delete()
+        .update({ deleted_at: new Date().toISOString() })
         .eq('id', id)
         .eq('user_id', user.id)
 

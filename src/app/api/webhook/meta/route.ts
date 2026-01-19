@@ -112,6 +112,7 @@ async function handleMessageEvent(supabase: any, event: any) {
         .eq('user_id', userId)
         .eq('status', 'published')
         .eq('type', 'dm')
+        .is('deleted_at', null)
 
     if (autoError) {
         console.log('AUTOMATIONS_QUERY_ERROR:', autoError)

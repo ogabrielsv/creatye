@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
     const q = searchParams.get('q');
 
     let query = supabase
-        .from('automations_with_exec_count')
+        .from('automations_with_stats')
         .select('*')
         .order('updated_at', { ascending: false });
 
