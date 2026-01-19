@@ -194,15 +194,25 @@ function AutomationBuilder() {
                 headers: { 'Content-Type': 'application/json' }
             });
 
-            if (!res.ok) throw new Error('Failed to save');
+            // Capture JSON regardless of status to show error details
+            const json = await res.json().catch(() => ({}));
 
-            if (status === 'published') {
-                alert('Automação Publicada!');
+            if (!res.ok) {
+                const errorMsg = json.details || json.error || 'Erro desconhecido';
+                const step = json.step ? ` [${json.step}]` : '';
+                throw new Error(`${errorMsg}${step}`);
             }
 
-        } catch (e) {
+            if (status === 'published') {
+                alert('Automação Publicada com Sucesso!');
+            } else {
+                // Optional: distinct message for draft
+                // alert('Rascunho salvo!'); 
+            }
+
+        } catch (e: any) {
             console.error(e);
-            alert('Erro ao salvar.');
+            alert(`Erro ao salvar: ${e.message}`);
         } finally {
             setSaving(false);
         }

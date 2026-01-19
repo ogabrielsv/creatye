@@ -11,15 +11,20 @@ export async function GET(request: NextRequest) {
 
     const searchParams = request.nextUrl.searchParams;
     const folderId = searchParams.get('folder_id');
-    const status = searchParams.get('status'); // all | published | draft
+    const status = searchParams.get('status');
     const q = searchParams.get('q');
 
     // 1. Fetch Automations
     let query = supabase
         .from('automations')
-        .select('*')
+        .select(`
+            *,
+            automation_execution_counts (
+                executions_count
+            )
+        `)
         .eq('user_id', user.id)
-        .is('deleted_at', null) // Critical fix
+        .is('deleted_at', null)
         .order('updated_at', { ascending: false });
 
     if (folderId && folderId !== 'all') {
@@ -29,7 +34,7 @@ export async function GET(request: NextRequest) {
         query = query.eq('status', status);
     }
     if (q) {
-        query = query.ilike('name', `%${q}%`); // title might not exist or be searchable depending on previous setup
+        query = query.ilike('name', `%${q}%`);
     }
 
     const { data: automations, error } = await query;
@@ -42,24 +47,15 @@ export async function GET(request: NextRequest) {
         return NextResponse.json([]);
     }
 
-    // 2. Fetch Counts
-    const ids = automations.map((a: any) => a.id);
-    const { data: counts } = await supabase
-        .from('automation_execution_counts')
-        .select('*')
-        .in('automation_id', ids);
-
-    // 3. Merge
-    const countMap = (counts || []).reduce((acc: any, curr: any) => {
-        acc[curr.automation_id] = curr;
-        return acc;
-    }, {});
-
+    // 2. Normalize
     const normalizedData = automations.map((item: any) => ({
         ...item,
         title: item.title || item.name,
-        executions_count: countMap[item.id]?.success_count || 0,
-        total_count: countMap[item.id]?.total_count || 0
+        // Use real count (array or object depending on join cardinality, usually object since single view entry per ID)
+        // PostgREST returns: automation_execution_counts: { executions_count: N } or [ { executions_count: N } ] or null
+        executions_count: (Array.isArray(item.automation_execution_counts)
+            ? item.automation_execution_counts[0]?.executions_count
+            : item.automation_execution_counts?.executions_count) || 0
     }));
 
     return NextResponse.json(normalizedData);
