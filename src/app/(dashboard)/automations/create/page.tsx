@@ -108,7 +108,8 @@ export default function CreateAutomationPage() {
             const res = await fetch('/api/automations', {
                 method: 'POST',
                 body: JSON.stringify({
-                    name,
+                    name, // Legacy support
+                    title: name, // New standard
                     description,
                     folder_id: folderId,
                     channels: selectedChannels,
@@ -121,12 +122,16 @@ export default function CreateAutomationPage() {
                 headers: { 'Content-Type': 'application/json' }
             });
 
+            const data = await res.json();
+
             if (res.ok) {
-                const data = await res.json();
-                router.push(`/automations/${data.id}`);
+                if (data.id) {
+                    router.push(`/automations/${data.id}`);
+                } else {
+                    router.push('/automations');
+                }
             } else {
-                const err = await res.json();
-                alert(`Erro: ${err.error}`);
+                alert(`Erro: ${data.error}`);
             }
         } catch (e) {
             console.error(e);
