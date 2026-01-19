@@ -149,17 +149,22 @@ async function handleCommentEvent(supabase: any, accountId: string, val: any) {
     if (!actions || actions.length === 0) return;
 
     // 5. Log Execution
-    let execId = null;
-    const { data: exec } = await supabase.from('automation_executions').insert({
+    // 5. Log Execution
+    // Hardened Insert
+    const { data: exec, error: execErr } = await supabase.from('automation_executions').insert({
         automation_id: matched.id,
         user_id: userId,
         version_id: matched.published_version_id, // Important for counting!
         status: 'running',
         payload: { source: 'comment', text: messageText, sender_id: senderId, media_id: mediaId, comment_id: commentId },
         updated_at: new Date().toISOString()
-    }).select('id').maybeSingle();
+    }).select('id').single();
 
-    if (exec) execId = exec.id;
+    if (execErr) {
+        console.error('[EXEC_LOG] insert failed:', execErr);
+        return;
+    }
+    const execId = exec.id;
 
     // 6. Execute Actions
     try {
@@ -278,16 +283,22 @@ async function handleMessageEvent(supabase: any, event: any) {
             const { data: actions } = await supabase.from('automation_actions').select('*').eq('automation_id', auto.id).order('created_at', { ascending: true });
 
             // Log
-            let execId = null;
-            const { data: exec } = await supabase.from('automation_executions').insert({
+            // Hardened Insert
+            const { data: exec, error: execErr } = await supabase.from('automation_executions').insert({
                 automation_id: auto.id,
                 user_id: userId,
                 version_id: auto.published_version_id,
                 status: 'running',
                 payload: { source: 'dm', text: messageText, sender_id: senderId },
                 updated_at: new Date().toISOString()
-            }).select('id').maybeSingle();
-            if (exec) execId = exec.id;
+            }).select('id').single();
+
+            if (execErr) {
+                console.error('[EXEC_LOG] insert failed:', execErr);
+                // Stop if execution log fails (Critical Requirement)
+                continue;
+            }
+            const execId = exec.id;
 
             try {
                 for (const action of (actions || [])) {
