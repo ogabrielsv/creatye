@@ -30,8 +30,6 @@ export async function POST(request: Request) {
             const supabase = createAdminClient()
 
             for (const entry of body.entry) {
-                // messaging events are often in entry.messaging
-                // or sometimes entry.changes for other types, but for DM it's messaging
                 const messagingEvents = entry.messaging || []
 
                 for (const event of messagingEvents) {
@@ -73,59 +71,43 @@ async function handleMessageEvent(supabase: any, event: any) {
     const userId = connection.user_id
 
     // 2. Find matching automations
-    // We need published DM automations for this user
     const { data: automations, error: autoError } = await supabase
         .from('automations')
-        .select(`
-            *,
-            automation_triggers (*),
-            automation_actions (*)
-        `)
+        .select(`*, automation_triggers (*), automation_actions (*)`)
         .eq('user_id', userId)
         .eq('status', 'published')
         .eq('type', 'dm')
 
     if (autoError || !automations) return
 
-    const normalizedMsg = messageText.trim().toLowerCase().replace(/[^\w\s]/gi, '').replace(/\s+/g, ' ')
+    const normalizedMsg = messageText
+        .trim()
+        .toLowerCase()
+        .replace(/[^\w\s]/g, '')
+        .replace(/\s+/g, ' ')
 
     for (const auto of automations) {
-        // Check triggers
         const triggers = auto.automation_triggers || []
         const matchedTrigger = triggers.find((t: any) => {
-            if (t.kind !== 'keyword') return false
-            const keyword = (t.keyword_text || '').trim().toLowerCase()
+            const triggerType = String(t.trigger_type || t.kind || '').toLowerCase()
+            if (triggerType !== 'keyword') return false
+
+            const filter = t.trigger_filter || {}
+            const keyword = String(filter.keyword || t.keyword || t.keyword_text || '').trim().toLowerCase()
             if (!keyword) return false
 
-            if (t.match_mode === 'exact') {
+            const matchMode = String(filter.match_mode || t.match_mode || 'contains').toLowerCase()
+
+            if (matchMode === 'exact' || matchMode === 'equals') {
                 return normalizedMsg === keyword
-            } else {
-                return normalizedMsg.includes(keyword)
             }
+            return normalizedMsg.includes(keyword)
         })
 
         if (matchedTrigger) {
             console.log(`Matched Automation: ${auto.name} (${auto.id})`)
 
-            // 3. Rate Limit Check (debounce)
-            // Check last execution for this sender/automation in last 30s
-            const thirtySecondsAgo = new Date(Date.now() - 30 * 1000).toISOString()
-
-            const { count } = await supabase
-                .from('automation_executions')
-                .select('*', { count: 'exact', head: true })
-                .eq('automation_id', auto.id)
-                .eq('status', 'success') // or any status? let's limit successes usually
-                .contains('payload', { sender_id: senderId }) // assuming payload stores this
-                .gt('created_at', thirtySecondsAgo)
-
-            if (count && count > 0) {
-                console.log('Rate limit exceeded for', senderId)
-                continue
-            }
-
-            // 4. Execute Action
-            // Create 'running' execution log
+            // Create execution log
             const { data: execData, error: execErr } = await supabase
                 .from('automation_executions')
                 .insert({
@@ -167,9 +149,6 @@ async function handleMessageEvent(supabase: any, event: any) {
                             error: actionErr.message || JSON.stringify(actionErr)
                         })
                         .eq('id', execId)
-
-                    // Optional: If token invalid, allow backend to mark disconnected
-                    // if (actionErr.message?.includes('session') || actionErr.code === 190) ...
                 }
             } else {
                 await supabase
