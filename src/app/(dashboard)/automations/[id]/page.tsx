@@ -1,7 +1,7 @@
 
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import ReactFlow, {
     Background,
@@ -13,18 +13,25 @@ import ReactFlow, {
     Edge,
     Node,
     MarkerType,
-    ReactFlowProvider
+    ReactFlowProvider,
+    useReactFlow
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { Play, Save, ArrowLeft, Settings, Loader2 } from 'lucide-react';
+import { v4 as uuidv4 } from 'uuid';
 
-// Custom Nodes (placeholder for now, will implement actual components later)
-// import StartNode from '@/components/automations/nodes/StartNode';
-// import MessageNode from '@/components/automations/nodes/MessageNode';
+import StartNode from '@/components/automations/nodes/StartNode';
+import TriggerNode from '@/components/automations/nodes/TriggerNode';
+import ActionNode from '@/components/automations/nodes/ActionNode';
+import ConditionNode from '@/components/automations/nodes/ConditionNode';
+import BuilderSidebar from '@/components/automations/BuilderSidebar';
+import NodeConfigPanel from '@/components/automations/NodeConfigPanel';
 
 const nodeTypes = {
-    // start: StartNode,
-    // message: MessageNode,
+    start: StartNode,
+    triggerNode: TriggerNode,
+    actionNode: ActionNode,
+    conditionNode: ConditionNode
 };
 
 export default function AutomationBuilderPage() {
@@ -39,10 +46,15 @@ function AutomationBuilder() {
     const params = useParams();
     const router = useRouter();
     const id = params.id as string;
+    const reactFlowWrapper = useRef<HTMLDivElement>(null);
+    const { project } = useReactFlow();
 
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [name, setName] = useState('');
+
+    // Selection for Config
+    const [selectedNode, setSelectedNode] = useState<Node | null>(null);
 
     // React Flow State
     const [nodes, setNodes, onNodesChange] = useNodesState([]);
@@ -54,7 +66,7 @@ function AutomationBuilder() {
 
     async function fetchAutomation() {
         try {
-            const res = await fetch(`/api/automations/${id}`);
+            const res = await fetch(`/api/automations/${id}`); // Assumes GET returns draft nodes/edges now
             if (!res.ok) {
                 if (res.status === 404) {
                     alert('Automação não encontrada');
@@ -64,30 +76,24 @@ function AutomationBuilder() {
                 throw new Error('Failed to load');
             }
             const data = await res.json();
-            setName(data.name);
 
-            // Load Draft or fallback to initial
-            // Ideally check automation_drafts table via API
-            // For now, let's assume the API returns the draft state if query param 'draft=true' 
-            // OR we fetch drafts separately.
-            // Let's simplified: The creation endpoint created a draft.
-            // We should fetch that draft.
+            // Adjust response structure based on previous fixes (data is root)
+            const automationData = data;
 
-            // Temporary fetch from new endpoint or reuse? 
-            // Let's implement /api/automations/[id]/draft route later. 
-            // For now, load default if empty.
+            setName(automationData.title || automationData.name);
 
-            if (data.nodes) {
-                setNodes(data.nodes || []);
-                setEdges(data.edges || []);
+            if (automationData.nodes && automationData.nodes.length > 0) {
+                setNodes(automationData.nodes);
+                setEdges(automationData.edges || []);
             } else {
-                // Initialize default
+                // Initial Default State if empty
                 setNodes([
                     {
                         id: 'start-1',
-                        type: 'input', // default
+                        type: 'start',
                         data: { label: 'Início' },
-                        position: { x: 250, y: 5 }
+                        position: { x: 250, y: 50 },
+                        deletable: false
                     }
                 ]);
             }
@@ -100,22 +106,88 @@ function AutomationBuilder() {
     }
 
     const onConnect = useCallback(
-        (params: Connection) => setEdges((eds) => addEdge({ ...params, type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed } }, eds)),
+        (params: Connection) => setEdges((eds) => addEdge({
+            ...params,
+            type: 'smoothstep',
+            markerEnd: { type: MarkerType.ArrowClosed },
+            style: { strokeWidth: 2 }
+        }, eds)),
         [setEdges]
     );
 
-    const handleSave = async () => {
+    const onDragOver = useCallback((event: React.DragEvent) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+    }, []);
+
+    const onDrop = useCallback(
+        (event: React.DragEvent) => {
+            event.preventDefault();
+
+            const type = event.dataTransfer.getData('application/reactflow');
+            const dataString = event.dataTransfer.getData('application/reactflow-data');
+
+            if (typeof type === 'undefined' || !type) {
+                return;
+            }
+
+            const position = project({
+                x: event.clientX - (reactFlowWrapper.current?.getBoundingClientRect().left || 0),
+                y: event.clientY - (reactFlowWrapper.current?.getBoundingClientRect().top || 0),
+            });
+
+            const newNode: Node = {
+                id: uuidv4(),
+                type,
+                position,
+                data: JSON.parse(dataString || '{}'),
+            };
+
+            setNodes((nds) => nds.concat(newNode));
+        },
+        [project, setNodes]
+    );
+
+    const onNodeClick = useCallback((event: React.MouseEvent, node: Node) => {
+        if (node.type === 'start') return; // Start node has no config usually
+        setSelectedNode(node);
+    }, []);
+
+    const updateNodeData = (nodeId: string, newData: any) => {
+        setNodes((nds) =>
+            nds.map((node) => {
+                if (node.id === nodeId) {
+                    node.data = { ...node.data, ...newData };
+                    if (selectedNode?.id === nodeId) {
+                        setSelectedNode({ ...node }); // Update selected node view
+                    }
+                }
+                return node;
+            })
+        );
+    };
+
+    const handleSave = async (status: 'draft' | 'published' = 'draft') => {
         setSaving(true);
         try {
-            const res = await fetch(`/api/automations/${id}/draft`, {
-                method: 'POST', // or PUT
-                body: JSON.stringify({ nodes, edges }),
+            // Using existing endpoint logic, but as PUT to automation details
+            // The prompt asked for: PUT /api/automations/[id] updating flow_data
+            const res = await fetch(`/api/automations/${id}`, {
+                method: 'PUT',
+                body: JSON.stringify({
+                    nodes,
+                    edges,
+                    status
+                }),
                 headers: { 'Content-Type': 'application/json' }
             });
 
             if (!res.ok) throw new Error('Failed to save');
 
-            // alert('Salvo com sucesso!'); 
+            if (status === 'published') {
+                alert('Automação Publicada!'); // Simple feedback
+            }
+
         } catch (e) {
             console.error(e);
             alert('Erro ao salvar.');
@@ -131,7 +203,7 @@ function AutomationBuilder() {
     return (
         <div className="h-screen flex flex-col bg-zinc-50">
             {/* Header */}
-            <div className="h-16 bg-white border-b border-zinc-200 flex items-center justify-between px-4 z-10">
+            <div className="h-16 bg-white border-b border-zinc-200 flex items-center justify-between px-4 z-30 relative shadow-sm">
                 <div className="flex items-center gap-4">
                     <button onClick={() => router.push('/automations')} className="text-zinc-500 hover:text-zinc-900">
                         <ArrowLeft size={20} />
@@ -144,7 +216,7 @@ function AutomationBuilder() {
 
                 <div className="flex items-center gap-2">
                     <button
-                        onClick={handleSave}
+                        onClick={() => handleSave('draft')}
                         disabled={saving}
                         className="flex items-center gap-2 px-4 py-2 bg-white border border-zinc-200 text-zinc-700 font-medium rounded-lg hover:bg-zinc-50 text-sm transition-all"
                     >
@@ -152,6 +224,8 @@ function AutomationBuilder() {
                         Salvar
                     </button>
                     <button
+                        onClick={() => handleSave('published')}
+                        disabled={saving}
                         className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 text-sm transition-all shadow-sm shadow-blue-600/20"
                     >
                         <Play size={16} fill="currentColor" />
@@ -160,20 +234,39 @@ function AutomationBuilder() {
                 </div>
             </div>
 
-            {/* Editor */}
-            <div className="flex-1 w-full h-full">
-                <ReactFlow
-                    nodes={nodes}
-                    edges={edges}
-                    onNodesChange={onNodesChange}
-                    onEdgesChange={onEdgesChange}
-                    onConnect={onConnect}
-                    fitView
-                    nodeTypes={nodeTypes}
-                >
-                    <Background color="#ccc" gap={16} />
-                    <Controls />
-                </ReactFlow>
+            {/* Editor Workspace */}
+            <div className="flex-1 flex overflow-hidden">
+                {/* Sidebar */}
+                <BuilderSidebar />
+
+                {/* Canvas */}
+                <div className="flex-1 relative h-full bg-zinc-50/50" ref={reactFlowWrapper}>
+                    <ReactFlow
+                        nodes={nodes}
+                        edges={edges}
+                        onNodesChange={onNodesChange}
+                        onEdgesChange={onEdgesChange}
+                        onConnect={onConnect}
+                        onDragOver={onDragOver}
+                        onDrop={onDrop}
+                        onNodeClick={onNodeClick}
+                        onPaneClick={() => setSelectedNode(null)}
+                        fitView
+                        nodeTypes={nodeTypes}
+                    >
+                        <Background color="#ccc" gap={20} size={1} />
+                        <Controls />
+                    </ReactFlow>
+
+                    {/* Config Panel */}
+                    {selectedNode && (
+                        <NodeConfigPanel
+                            node={selectedNode}
+                            onClose={() => setSelectedNode(null)}
+                            onChange={updateNodeData}
+                        />
+                    )}
+                </div>
             </div>
         </div>
     );

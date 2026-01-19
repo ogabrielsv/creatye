@@ -40,5 +40,65 @@ export async function GET(req: Request, ctx: Ctx) {
         return NextResponse.json({ error: "Automation not found" }, { status: 404 })
     }
 
-    return NextResponse.json(data)
+    // Need to fetch draft for GE!
+    const { data: draft } = await supabase
+        .from('automation_drafts')
+        .select('nodes, edges')
+        .eq('automation_id', id)
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+    return NextResponse.json({
+        ...data,
+        nodes: draft?.nodes || [],
+        edges: draft?.edges || []
+    })
+}
+
+export async function PUT(req: Request, ctx: Ctx) {
+    const resolvedParams = await Promise.resolve(ctx.params)
+    const id = resolvedParams?.id
+
+    if (!id) return NextResponse.json({ error: "Invalid ID" }, { status: 400 })
+
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+
+    const body = await req.json()
+    const { nodes, edges, status } = body
+
+    // 1. Update Status if changed
+    if (status) {
+        await supabase
+            .from('automations')
+            .update({
+                status: status,
+                published_at: status === 'published' ? new Date().toISOString() : undefined
+            })
+            .eq('id', id)
+            .eq('user_id', user.id)
+    }
+
+    // 2. Save Draft (Nodes/Edges)
+    // Upsert logic for automation_drafts
+    // Check if draft exists first or just upsert with onConflict on automation_id
+    const { error } = await supabase
+        .from('automation_drafts')
+        .upsert({
+            automation_id: id,
+            user_id: user.id,
+            nodes: nodes || [],
+            edges: edges || [],
+            updated_at: new Date().toISOString()
+        }, { onConflict: 'automation_id' })
+
+    if (error) {
+        console.error("Error saving draft:", error)
+        return NextResponse.json({ error: "Failed to save draft" }, { status: 500 })
+    }
+
+    return NextResponse.json({ success: true })
 }
