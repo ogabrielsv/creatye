@@ -127,12 +127,106 @@ export async function PUT(req: Request, ctx: Ctx) {
     }
 
     // 4. PUBLISHING LOGIC (Versioning & Sync)
+    // Always create a version if we are in 'published' state (concept of "Deploy")
     if (status === 'published') {
         if (!nodes || !Array.isArray(nodes)) {
             return NextResponse.json({ error: "No nodes provided for publication" }, { status: 400 });
         }
 
-        // A) Create Version
+        // --- A. Prepare Triggers & Actions (Validation Phase) ---
+        const triggersToInsert: any[] = [];
+        const actionsToInsert: any[] = [];
+
+        // Determine context once (if multiple triggers exist, we might have conflict on 'channel' but typically 1 trigger per flow)
+        // We hunt for the trigger(s)
+        const triggerNodes = nodes.filter((n: any) => n.type === 'triggerNode');
+        const isCommentChannel = triggerNodes.some((n: any) => n.data?.triggerType === 'comment_keyword');
+
+        for (const node of nodes) {
+            // Trigger Nodes
+            if (node.type === 'triggerNode') {
+                const tData = node.data || {};
+                const kw = (tData.keyword || tData.text || '').trim();
+
+                // We only insert if there's a keyword? Or maybe some triggers don't need keywords (e.g. story mention)?
+                // For 'keyword' based triggers, we need a keyword.
+                // For 'story_mention', keyword might be empty.
+                const tType = tData.triggerType || 'dm_keyword';
+
+                if (kw || tType === 'story_mention') {
+                    const filter = {
+                        keyword: kw,
+                        match_mode: (tData.matchType || tData.match_mode || 'contains').toLowerCase(),
+                        case_insensitive: true,
+                        // Context fields
+                        channel: tType === 'comment_keyword' ? 'comment_feed' : 'dm',
+                        target_mode: tData.targetMode || 'any',
+                        target_media_id: tData.targetMediaId || null
+                    };
+
+                    triggersToInsert.push({
+                        automation_id: id,
+                        user_id: user.id,
+                        trigger_type: 'keyword', // Internal type, metadata stores the UI type
+                        trigger_filter: filter,
+                        metadata: { type: tType }
+                    });
+                }
+            }
+
+            // Action Nodes
+            // We map 'actionNode' (legacy/generic), 'message', 'buttons', 'cards'
+            if (node.type === 'actionNode' || node.type === 'message') {
+                const msg = (node.data?.message || node.data?.text || '').trim();
+                if (msg) {
+                    actionsToInsert.push({
+                        automation_id: id,
+                        user_id: user.id,
+                        // If it's a comment flow, default simple text to 'reply_comment' (public)
+                        // This assumes the user wants to reply publicly.
+                        kind: isCommentChannel ? 'reply_comment' : 'send_dm',
+                        message_text: msg
+                    });
+                }
+            }
+            else if (node.type === 'buttons' && node.data?.buttons?.length) {
+                actionsToInsert.push({
+                    automation_id: id,
+                    user_id: user.id,
+                    kind: 'buttons', // Buttons are DM only
+                    message_text: node.data.message || 'Opções',
+                    metadata: { buttons: node.data.buttons }
+                });
+            }
+            else if (node.type === 'cards' && node.data?.cards?.length) {
+                actionsToInsert.push({
+                    automation_id: id,
+                    user_id: user.id,
+                    kind: 'cards', // Cards are DM only
+                    message_text: 'Ver opções',
+                    metadata: { cards: node.data.cards }
+                });
+            }
+        }
+
+        // --- B. Validation ---
+        // If no triggers, DO NOT publish. It would be an orphan automation.
+        if (triggersToInsert.length === 0) {
+            console.warn('[SYNC] Blocked publish: missing triggers');
+            // Revert status to draft in DB so UI reflects reality
+            await supabase.from('automations').update({ status: 'draft' }).eq('id', id);
+            return NextResponse.json({
+                error: "Sua automação publicada precisa ter pelo menos 1 gatilho configurado."
+            }, { status: 400 });
+        }
+
+        // Actions are optional? Usually yes, but user snippet checked for them.
+        // We'll allow 0 actions (maybe it just logs?), but typically not useful.
+        // User snippet logic: `if (triggersToInsert.length === 0) return error`. It didn't enforce actions explicitly in the return, only loop.
+        // But my previous code enforced it. I will relax it to "must have triggers".
+
+        // --- C. Create Version Snapshot ---
+        // We do this BEFORE syncing so we have the ID.
         const { data: version, error: verError } = await supabase
             .from('automation_versions')
             .insert({
@@ -150,126 +244,32 @@ export async function PUT(req: Request, ctx: Ctx) {
             return NextResponse.json({ error: "Failed to create version" }, { status: 500 });
         }
 
-        // B) Update Published Version ID
+        // Update Automation with Version ID
         await supabase
             .from('automations')
             .update({ published_version_id: version.id })
             .eq('id', id);
 
-        // C) Sync Triggers & Actions
-        const triggersToInsert: any[] = [];
-        const actionsToInsert: any[] = [];
-        const isCommentChannel = (updates.channel === 'comment_feed' || triggerType === 'comment_keyword');
+        // --- D. Sync Triggers/Actions (The Destructive Part) ---
+        // Now that we validated, we can safely clear old configs.
 
-        // --- C1. Triggers ---
-        if (triggerNode) {
-            const kw = triggerData.keyword ? triggerData.keyword.trim() : '';
-            if (kw) {
-                // Construct filter exactly as requested
-                const filter = {
-                    keyword: kw,
-                    match_mode: (triggerData.matchType || triggerData.match_mode || 'contains').toLowerCase(),
-                    channel: isCommentChannel ? 'comment_feed' : 'dm',
-                    target_mode: triggerData.targetMode || 'any',
-                    target_media_id: triggerData.targetMediaId || null,
-                    case_insensitive: true
-                };
+        const delTrig = await supabase.from('automation_triggers').delete().eq('automation_id', id).eq('user_id', user.id);
+        const delAct = await supabase.from('automation_actions').delete().eq('automation_id', id).eq('user_id', user.id);
 
-                triggersToInsert.push({
-                    automation_id: id,
-                    user_id: user.id,
-                    trigger_type: 'keyword', // Always 'keyword' logic with filter properties
-                    trigger_filter: filter,
-                    metadata: { type: triggerType }
-                });
-            }
+        if (delTrig.error) console.error("[SYNC] Failed deleting triggers:", delTrig.error);
+        if (delAct.error) console.error("[SYNC] Failed deleting actions:", delAct.error);
+
+        // Insert New
+        const insTrig = await supabase.from('automation_triggers').insert(triggersToInsert);
+        if (insTrig.error) {
+            console.error("[SYNC] Failed inserting triggers:", insTrig.error);
+            return NextResponse.json({ error: "Failed to sync triggers" }, { status: 500 });
         }
 
-        // --- C2. Actions ---
-        for (const node of nodes) {
-            if (node.type === 'triggerNode' || node.type === 'start') continue;
-
-            // Determine Kind
-            let kind = 'send_dm'; // Default
-            if (isCommentChannel) kind = 'reply_comment'; // Default for comment automations?
-            // Actually, usually comment triggers result in a DM Reply (private reply) OR Comment Reply.
-            // User requested "ActionNode (Responder comentário)" => implies public reply
-            // But usually "Comment on Post" automations send a DM. 
-            // The USER said: "Action dfeault para comentário: kind='reply_comment' (message_text)"
-            // So if channel is comment -> action is reply_comment.
-
-            // However, nodes might be 'buttons' or 'cards' which are ONLY supported in DM.
-            // If the user drags a 'Message Block' in a comment flow, is it a public reply or DM?
-            // "Gaio" style usually sends a DM. But the user specifically asked:
-            // "Action default para comentário: kind="reply_comment""
-            // Let's implement logic: If node is simple text => reply_comment. If Rich => send_dm (since comments don't support cards).
-
-            // For now, following exact instruction: "action default para comentário: kind='reply_comment'"
-            // We will map simple messages to 'reply_comment' if channel is comment.
-            // If the user wants to send a DM from a comment, they probably need a specific 'Send DM' block or we assume 'reply_comment' IS the DM?
-            // Clarification: "Executar action reply_comment ... chamar Graph API pra responder comentário" -> This is a PUBLIC REPLY.
-            // Wait, does the user want to send the DM with the brochure? usually yes.
-            // "Fazer Comentário no Feed ... Responder comentário via Graph API (comentário reply)"
-            // Okay, the user wants the bot to REPLY TO THE COMMENT. 
-            // Does strictly that mean NO DM? Most automations do "Reply on comment + Send DM".
-            // Since we iterate nodes, maybe we can have multiple actions?
-            // For now, let's map text nodes to 'reply_comment' if channel is comment_feed.
-
-            const msg = node.data?.message || node.data?.text;
-            const buttons = node.data?.buttons;
-            const cards = node.data?.cards;
-
-            if (node.type === 'actionNode' || node.type === 'message') {
-                if (msg) {
-                    actionsToInsert.push({
-                        automation_id: id,
-                        user_id: user.id,
-                        kind: isCommentChannel ? 'reply_comment' : 'send_dm',
-                        message_text: msg
-                    });
-                }
-            }
-            else if (node.type === 'buttons' && buttons?.length) {
-                // Buttons only work in DM
-                actionsToInsert.push({
-                    automation_id: id,
-                    user_id: user.id,
-                    kind: 'buttons', // DM only
-                    message_text: msg || 'Opções',
-                    metadata: { buttons }
-                });
-            }
-            else if (node.type === 'cards' && cards?.length) {
-                // Cards only work in DM
-                actionsToInsert.push({
-                    automation_id: id,
-                    user_id: user.id,
-                    kind: 'cards', // DM only
-                    message_text: 'Ver opções',
-                    metadata: { cards }
-                });
-            }
+        if (actionsToInsert.length > 0) {
+            const insAct = await supabase.from('automation_actions').insert(actionsToInsert);
+            if (insAct.error) console.error("[SYNC] Failed inserting actions:", insAct.error);
         }
-
-        // VALIDATION
-        if (triggersToInsert.length === 0 || actionsToInsert.length === 0) {
-            console.warn('[SYNC] Blocked publish: missing/invalid triggers or actions')
-            await supabase.from('automations').update({ status: 'draft' }).eq('id', id); // Revert
-            return NextResponse.json({
-                error: "cannot_publish_without_trigger_or_action",
-                details: "Configure pelo menos um Gatilho e uma Ação."
-            }, { status: 400 });
-        }
-
-        // Clean & Insert
-        await supabase.from('automation_triggers').delete().eq('automation_id', id).eq('user_id', user.id);
-        await supabase.from('automation_actions').delete().eq('automation_id', id).eq('user.id', user.id);
-
-        const { error: insTrigErr } = await supabase.from('automation_triggers').insert(triggersToInsert);
-        if (insTrigErr) console.error("Error inserting triggers:", insTrigErr);
-
-        const { error: insActErr } = await supabase.from('automation_actions').insert(actionsToInsert);
-        if (insActErr) console.error("Error inserting actions:", insActErr);
 
         console.log(`[SYNC] Published V${version.id}. Triggers: ${triggersToInsert.length}, Actions: ${actionsToInsert.length}`);
     }
