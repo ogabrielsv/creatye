@@ -105,13 +105,10 @@ export async function PUT(req: Request, ctx: Ctx) {
     }
 
     // 3. Sync Triggers/Actions if Published
-    if (status === 'published' && nodes && nodes.length > 0) {
-        // Limpa config anterior
-        const delTrig = await supabase.from('automation_triggers').delete().eq('automation_id', id).eq('user_id', user.id)
-        if (delTrig.error) console.error('[SYNC] delete triggers error', delTrig.error)
-
-        const delAct = await supabase.from('automation_actions').delete().eq('automation_id', id).eq('user_id', user.id)
-        if (delAct.error) console.error('[SYNC] delete actions error', delAct.error)
+    if (status === 'published') {
+        if (!nodes || !Array.isArray(nodes)) {
+            return NextResponse.json({ error: "No nodes provided for publication" }, { status: 400 })
+        }
 
         const triggersToInsert: any[] = []
         const actionsToInsert: any[] = []
@@ -124,7 +121,6 @@ export async function PUT(req: Request, ctx: Ctx) {
 
                 if (keyword) {
                     const matchMode = (node.data?.matchType || node.data?.match_mode || 'contains').toLowerCase()
-
                     triggersToInsert.push({
                         automation_id: id,
                         user_id: user.id,
@@ -141,7 +137,7 @@ export async function PUT(req: Request, ctx: Ctx) {
             // Action node (send dm)
             if (node.type === 'actionNode') {
                 const msgRaw = node.data?.message ?? node.data?.text ?? node.data?.value
-                const message_text = typeof msgRaw === 'string' ? msgRaw : ''
+                const message_text = typeof msgRaw === 'string' ? msgRaw.trim() : ''
 
                 if (message_text) {
                     actionsToInsert.push({
@@ -154,20 +150,40 @@ export async function PUT(req: Request, ctx: Ctx) {
             }
         }
 
-        console.log('[SYNC] triggersToInsert=', triggersToInsert.length, 'actionsToInsert=', actionsToInsert.length)
+        // VALIDATION: Cannot publish without valid trigger and action
+        if (triggersToInsert.length === 0 || actionsToInsert.length === 0) {
+            console.warn('[SYNC] Blocked publish: missing triggers or actions', { triggers: triggersToInsert.length, actions: actionsToInsert.length })
+            // Revert status to draft if validation fails? Or just error?
+            // User requested: return 400 error
+            // We should ideally revert the status update from step 1, but for now we just error.
+            // A better approach might be to validate BEFORE step 1. 
+            // However, following the instruction strictly to "Validation of publish" inside the sync block.
 
-        if (triggersToInsert.length > 0) {
-            const insTrig = await supabase.from('automation_triggers').insert(triggersToInsert)
-            if (insTrig.error) console.error('[SYNC] insert triggers error', insTrig.error)
-        } else {
-            console.warn('[SYNC] No triggers to insert. Check node.data.keyword in TriggerNode.')
+            // Reverting status to draft to be safe
+            await supabase.from('automations').update({ status: 'draft' }).eq('id', id)
+
+            return NextResponse.json({
+                error: "cannot_publish_without_trigger_or_action",
+                details: "You need at least one valid trigger (keyword) and one action (message)."
+            }, { status: 400 })
         }
 
-        if (actionsToInsert.length > 0) {
-            const insAct = await supabase.from('automation_actions').insert(actionsToInsert)
-            if (insAct.error) console.error('[SYNC] insert actions error', insAct.error)
-        } else {
-            console.warn('[SYNC] No actions to insert. Check node.data.message in ActionNode.')
+        // Clean existing
+        await supabase.from('automation_triggers').delete().eq('automation_id', id).eq('user_id', user.id)
+        await supabase.from('automation_actions').delete().eq('automation_id', id).eq('user_id', user.id)
+
+        console.log('[SYNC] Inserting:', { triggers: triggersToInsert.length, actions: actionsToInsert.length })
+
+        const insTrig = await supabase.from('automation_triggers').insert(triggersToInsert)
+        if (insTrig.error) {
+            console.error('[SYNC] insert triggers error', insTrig.error)
+            return NextResponse.json({ error: "Failed to save triggers" }, { status: 500 })
+        }
+
+        const insAct = await supabase.from('automation_actions').insert(actionsToInsert)
+        if (insAct.error) {
+            console.error('[SYNC] insert actions error', insAct.error)
+            return NextResponse.json({ error: "Failed to save actions" }, { status: 500 })
         }
     }
 
