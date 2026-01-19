@@ -65,18 +65,4 @@ CREATE POLICY "Manage Own Automations" ON public.automations USING (auth.uid() =
 
 -- Triggers (Join automations to check permission) - Simpler: assuming we add user_id to triggers/actions as redundant key or join
 -- User asked "SELECT/INSERT/UPDATE/DELETE somente quando user_id = auth.uid()"
--- Adding user_id to these tables to make RLS simple and fast
-ALTER TABLE public.automation_triggers ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES auth.users(id);
-ALTER TABLE public.automation_actions ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES auth.users(id);
--- Executions already has user_id added above
-
-DROP POLICY IF EXISTS "Manage Own Triggers" ON public.automation_triggers;
-CREATE POLICY "Manage Own Triggers" ON public.automation_triggers USING (auth.uid() = user_id);
-
-DROP POLICY IF EXISTS "Manage Own Actions" ON public.automation_actions;
-CREATE POLICY "Manage Own Actions" ON public.automation_actions USING (auth.uid() = user_id);
-
-DROP POLICY IF EXISTS "Manage Own Executions" ON public.automation_executions;
-CREATE POLICY "Manage Own Executions" ON public.automation_executions USING (auth.uid() = user_id);
-
-NOTIFY pgrst, 'reload schema';
+-- Adding user_id to
