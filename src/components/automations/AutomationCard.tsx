@@ -1,6 +1,7 @@
+import { useState, useRef, useEffect } from 'react';
 import { Automation } from '@/../creatye-core/automation/types';
 import Link from 'next/link';
-import { Play, Pause, MoreVertical, Edit, Trash2, Box, MessageCircle, Instagram } from 'lucide-react';
+import { Play, MoreVertical, Edit, Trash2, Box, Instagram, MessageCircle } from 'lucide-react';
 
 interface AutomationCardProps {
     automation: Automation;
@@ -8,11 +9,31 @@ interface AutomationCardProps {
 }
 
 export function AutomationCard({ automation, onDelete }: AutomationCardProps) {
+    const [isMenuOpen, setIsMenuOpen] = useState(false);
+    const menuRef = useRef<HTMLDivElement>(null);
+
     const statusColor = automation.status === 'published'
         ? 'bg-green-100 text-green-700 border-green-200'
         : 'bg-zinc-100 text-zinc-600 border-zinc-200';
 
-    const TypeIcon = automation.type === 'story' ? Instagram : MessageCircle;
+    useEffect(() => {
+        function handleClickOutside(event: MouseEvent) {
+            if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+                setIsMenuOpen(false);
+            }
+        }
+        document.addEventListener("mousedown", handleClickOutside);
+        return () => {
+            document.removeEventListener("mousedown", handleClickOutside);
+        };
+    }, []);
+
+    const handleDelete = () => {
+        setIsMenuOpen(false);
+        if (onDelete) {
+            onDelete(automation.id);
+        }
+    };
 
     return (
         <div className="group relative bg-white border border-zinc-200 rounded-xl p-5 hover:shadow-md transition-all hover:border-blue-200">
@@ -31,9 +52,26 @@ export function AutomationCard({ automation, onDelete }: AutomationCardProps) {
                     </div>
                 </div>
 
-                <button className="p-1 hover:bg-zinc-100 rounded text-zinc-400">
-                    <MoreVertical size={16} />
-                </button>
+                <div className="relative" ref={menuRef}>
+                    <button
+                        onClick={() => setIsMenuOpen(!isMenuOpen)}
+                        className="p-1 hover:bg-zinc-100 rounded text-zinc-400 transition-colors"
+                    >
+                        <MoreVertical size={16} />
+                    </button>
+
+                    {isMenuOpen && (
+                        <div className="absolute right-0 top-full mt-1 w-32 bg-white border border-zinc-200 rounded-lg shadow-lg z-10 py-1 overflow-hidden">
+                            <button
+                                onClick={handleDelete}
+                                className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2 transition-colors"
+                            >
+                                <Trash2 size={14} />
+                                Excluir
+                            </button>
+                        </div>
+                    )}
+                </div>
             </div>
 
             <div className="flex items-center gap-4 text-sm text-zinc-500 mb-6">

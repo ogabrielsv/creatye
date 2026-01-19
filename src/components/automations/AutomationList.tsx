@@ -8,9 +8,10 @@ interface AutomationListProps {
     automations: Automation[];
     loading?: boolean;
     onCreateClick?: () => void;
+    onDelete?: (id: string) => void;
 }
 
-export function AutomationList({ automations, loading, onCreateClick }: AutomationListProps) {
+export function AutomationList({ automations, loading, onCreateClick, onDelete }: AutomationListProps) {
     if (loading) {
         return <div className="p-8 text-center text-zinc-500">Carregando automações...</div>;
     }
@@ -38,7 +39,7 @@ export function AutomationList({ automations, loading, onCreateClick }: Automati
     return (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6">
             {automations.map(auto => (
-                <AutomationCard key={auto.id} automation={auto} />
+                <AutomationCard key={auto.id} automation={auto} onDelete={onDelete} />
             ))}
         </div>
     );

@@ -130,6 +130,21 @@ export default function AutomationsPage() {
         router.push('/automations/create');
     }
 
+    async function handleDeleteAutomation(id: string) {
+        if (!confirm('Tem certeza que deseja excluir esta automação?')) return;
+
+        try {
+            const res = await fetch(`/api/automations/${id}`, { method: 'DELETE' });
+            if (res.ok) {
+                setAutomations(prev => prev.filter(a => a.id !== id));
+            } else {
+                alert('Erro ao excluir automação.');
+            }
+        } catch (error) {
+            console.error('Failed to delete automation', error);
+        }
+    }
+
     const currentFolderName = selectedFolderId
         ? folders.find(f => f.id === selectedFolderId)?.name || 'Pasta'
         : 'Todas';
@@ -284,6 +299,7 @@ export default function AutomationsPage() {
                     automations={automations}
                     loading={loading}
                     onCreateClick={handleCreateAutomation}
+                    onDelete={handleDeleteAutomation}
                 />
             </div>
 

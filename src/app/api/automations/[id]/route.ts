@@ -189,3 +189,29 @@ export async function PUT(req: Request, ctx: Ctx) {
 
     return NextResponse.json({ success: true })
 }
+
+export async function DELETE(req: Request, ctx: Ctx) {
+    const resolvedParams = await Promise.resolve(ctx.params)
+    const id = resolvedParams?.id
+
+    if (!id) return NextResponse.json({ error: "Invalid ID" }, { status: 400 })
+
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+
+    // Delete automation (cascade should handle related tables)
+    const { error } = await supabase
+        .from('automations')
+        .delete()
+        .eq('id', id)
+        .eq('user_id', user.id)
+
+    if (error) {
+        console.error("Error deleting automation:", error)
+        return NextResponse.json({ error: "Failed to delete automation" }, { status: 500 })
+    }
+
+    return NextResponse.json({ success: true })
+}
