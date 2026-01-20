@@ -1,6 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
 import { NextRequest, NextResponse } from 'next/server'
-import { v4 as uuidv4 } from 'uuid'
 import { createClient as createSupabaseClient } from '@supabase/supabase-js'
 
 export async function GET(request: NextRequest) {
@@ -9,24 +8,30 @@ export async function GET(request: NextRequest) {
     const error = searchParams.get('error')
     const state = searchParams.get('state')
 
-    const redirectBase = new URL('/settings', request.url)
+    // Prepare redirect URL foundation
+    const settingsUrl = new URL('/settings', request.url)
+    settingsUrl.searchParams.set('tab', 'integracoes')
 
+    // Handle initial errors
     if (error) {
-        redirectBase.searchParams.set('error', error)
-        return NextResponse.redirect(redirectBase)
+        settingsUrl.searchParams.set('error', 'Erro no login: ' + error)
+        return NextResponse.redirect(settingsUrl)
     }
 
     if (!code) {
-        redirectBase.searchParams.set('error', 'no_code')
-        return NextResponse.redirect(redirectBase)
+        settingsUrl.searchParams.set('error', 'Código de autorização não recebido')
+        return NextResponse.redirect(settingsUrl)
     }
 
-    // Validate State using request cookies
-    const storedState = request.cookies.get('meta_oauth_state')?.value
-
+    // Validate State
+    const storedState = request.cookies.get('ig_oauth_state')?.value
     if (!state || state !== storedState) {
-        redirectBase.searchParams.set('error', 'invalid_state')
-        return NextResponse.redirect(redirectBase)
+        // Fallback: checks if maybe using old cookie name from previous attempts
+        const legacyState = request.cookies.get('meta_oauth_state')?.value
+        if (!state || state !== legacyState) {
+            settingsUrl.searchParams.set('error', 'Estado de segurança inválido (CSRF)')
+            return NextResponse.redirect(settingsUrl)
+        }
     }
 
     // Auth Check
@@ -38,79 +43,75 @@ export async function GET(request: NextRequest) {
     }
 
     try {
-        const INSTAGRAM_APP_ID = process.env.META_APP_ID || process.env.INSTAGRAM_APP_ID
-        const INSTAGRAM_APP_SECRET = process.env.META_APP_SECRET || process.env.INSTAGRAM_APP_SECRET
-        const REDIRECT_URI = process.env.META_REDIRECT_URI || `${process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_SITE_URL}/api/meta/callback`
+        const META_APP_ID = process.env.META_APP_ID
+        const META_APP_SECRET = process.env.META_APP_SECRET
+        const REDIRECT_URI = process.env.META_REDIRECT_URI
 
-        if (!INSTAGRAM_APP_ID || !INSTAGRAM_APP_SECRET) {
-            throw new Error('Missing App Credentials Envs')
+        if (!META_APP_ID || !META_APP_SECRET || !REDIRECT_URI) {
+            throw new Error('Configuração de servidor incompleta (Env vars)')
         }
 
         // 1. Exchange Code for Access Token
         const tokenRes = await fetch(
-            `https://graph.facebook.com/v19.0/oauth/access_token?client_id=${INSTAGRAM_APP_ID}&client_secret=${INSTAGRAM_APP_SECRET}&redirect_uri=${REDIRECT_URI}&code=${code}`
+            `https://graph.facebook.com/v19.0/oauth/access_token?client_id=${META_APP_ID}&client_secret=${META_APP_SECRET}&redirect_uri=${REDIRECT_URI}&code=${code}`
         )
         const tokenData = await tokenRes.json()
 
         if (tokenData.error) {
-            throw new Error(tokenData.error.message)
+            console.error('Meta Token Error:', tokenData.error)
+            throw new Error('Erro ao validar token: ' + tokenData.error.message)
         }
 
         const accessToken = tokenData.access_token
 
         // 2. Get User's Pages and Instagram Accounts
-        // We need the Connected Instagram Account ID and the Page Access Token
         const pagesRes = await fetch(
-            `https://graph.facebook.com/v19.0/me/accounts?fields=id,name,access_token,instagram_business_account{id,username,profile_picture_url}&access_token=${accessToken}`
+            `https://graph.facebook.com/v19.0/me/accounts?fields=id,name,access_token,instagram_business_account{id,username}&access_token=${accessToken}`
         )
         const pagesData = await pagesRes.json()
 
         if (pagesData.error) {
-            throw new Error(pagesData.error.message)
+            throw new Error('Erro ao buscar páginas: ' + pagesData.error.message)
         }
 
         const pages = pagesData.data || []
         let connectedAccount = null
 
-        // Find the first page with a connected Instagram Business Account
+        // Find first page with IG business account
         for (const page of pages) {
             if (page.instagram_business_account && page.instagram_business_account.id) {
                 connectedAccount = {
                     pageId: page.id,
-                    pageName: page.name,
-                    pageAccessToken: page.access_token, // IMPORTANT: Use THIS token for graph API calls
+                    pageAccessToken: page.access_token,
                     igUserId: page.instagram_business_account.id,
-                    username: page.instagram_business_account.username,
-                    profilePic: page.instagram_business_account.profile_picture_url
+                    username: page.instagram_business_account.username
                 }
                 break
             }
         }
 
         if (!connectedAccount) {
-            throw new Error('No Instagram Business Account connected to your Facebook Pages. Please connect one in Facebook Page Settings.')
+            throw new Error('Nenhuma conta comercial do Instagram vinculada às suas Páginas do Facebook.')
         }
 
-        // 3. Save to Supabase (using Service Role to bypass potential RLS during upserts if needed, though authenticating as user is better if policies allow)
-        // We use Admin client here to ensure we can write to system tables if needed, but primarily to follow the request instruction to be robust.
-        // Actually, adhering to RLS is better, but the user requested explicit service role usage in step 4.
-
+        // 3. Save to Supabase (using Service Role)
         const supabaseAdmin = createSupabaseClient(
             process.env.NEXT_PUBLIC_SUPABASE_URL!,
             process.env.SUPABASE_SERVICE_ROLE_KEY!,
-            {
-                auth: { persistSession: false }
-            }
+            { auth: { persistSession: false } }
         )
 
         const payload = {
             user_id: user.id,
-            instagram_id: connectedAccount.igUserId,
+            instagram_id: connectedAccount.igUserId, // kept for constraint unique
             page_id: connectedAccount.pageId,
-            access_token: connectedAccount.pageAccessToken, // Store the PAGE token, it interacts with IG Graph API
-            username: connectedAccount.username,
+            page_access_token: connectedAccount.pageAccessToken, // CRITICAL: The Page Token
+            user_access_token: accessToken, // Optional
+            ig_user_id: connectedAccount.igUserId,
+            ig_username: connectedAccount.username,
             updated_at: new Date().toISOString(),
-            // Optional: You might want to save Token Expiry if available
+            token_updated_at: new Date().toISOString(),
+            disconnected_at: null
         }
 
         const { error: upsertError } = await supabaseAdmin
@@ -118,25 +119,15 @@ export async function GET(request: NextRequest) {
             .upsert(payload, { onConflict: 'instagram_id' })
 
         if (upsertError) {
-            throw new Error('DB Error: ' + upsertError.message)
+            throw new Error('Erro ao salvar no banco: ' + upsertError.message)
         }
 
-        // Also update legacy table if needed (optional)
-        const legacyPayload = {
-            user_id: user.id,
-            ig_user_id: connectedAccount.igUserId,
-            instagram_business_account_id: connectedAccount.igUserId,
-            access_token: connectedAccount.pageAccessToken,
-            updated_at: new Date().toISOString()
-        }
-        await supabaseAdmin.from('ig_connections').upsert(legacyPayload, { onConflict: 'user_id' })
-
-        redirectBase.searchParams.set('connected', 'true')
-        return NextResponse.redirect(redirectBase)
+        settingsUrl.searchParams.set('ig', 'conectado')
+        return NextResponse.redirect(settingsUrl)
 
     } catch (err: any) {
-        console.error('Meta Callback Error:', err)
-        redirectBase.searchParams.set('error', err.message || 'Unknown Error')
-        return NextResponse.redirect(redirectBase)
+        console.error('Callback Error:', err)
+        settingsUrl.searchParams.set('error', err.message || 'Erro desconhecido')
+        return NextResponse.redirect(settingsUrl)
     }
 }

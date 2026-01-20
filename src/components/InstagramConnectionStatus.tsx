@@ -24,7 +24,7 @@ export function InstagramConnectionStatus() {
 
     const fetchConnection = async () => {
         try {
-            const res = await fetch('/api/meta/connection', { cache: 'no-store' });
+            const res = await fetch('/api/instagram/status', { cache: 'no-store' });
             if (res.ok) {
                 const json = await res.json();
                 setData(json);
@@ -43,7 +43,7 @@ export function InstagramConnectionStatus() {
     const handleDisconnect = async () => {
         try {
             setIsDisconnecting(true);
-            const res = await fetch('/api/meta/disconnect', { method: 'POST' });
+            const res = await fetch('/api/instagram/disconnect', { method: 'POST' });
             if (res.ok) {
                 setData({ connected: false });
                 router.refresh();
@@ -134,7 +134,7 @@ export function InstagramConnectionStatus() {
     return (
         <div className="px-4 py-3 border-b border-border/50">
             <a
-                href="/api/meta/connect"
+                href="/api/instagram/connect"
                 className="flex items-center justify-center gap-2 w-full py-2.5 rounded-lg text-white font-semibold text-sm transition-all shadow-md hover:shadow-lg hover:opacity-90 active:scale-95"
                 style={{
                     background: 'linear-gradient(45deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%)'

@@ -58,43 +58,44 @@ async function safeInsertExecLog(data: {
 
 // 1. Helper Account Resolution (The Source of Truth)
 async function resolveAccountByRecipientId(recipientId: string) {
-    // A) Try instagram_accounts (Standard)
+    // 1. Try instagram_accounts (Standard)
     const { data: acc } = await supabaseAdmin
         .from('instagram_accounts')
         .select('*')
-        .eq('instagram_id', recipientId)
+        .eq('ig_user_id', recipientId) // Match by Instagram Business ID (recipient)
+        .is('disconnected_at', null)
         .maybeSingle();
 
     if (acc) {
-        // Validation: Check if token exists
-        if (!acc.access_token) {
-            console.log(`[RESOLVE_ACCOUNT] Found account for ${recipientId} but access_token is empty.`);
+        if (!acc.page_access_token) {
+            console.log(`[RESOLVE_ACCOUNT] Account found for ${recipientId} but page_access_token is missing.`);
             return null;
         }
+
         return {
             userId: acc.user_id,
-            accessToken: acc.access_token,
-            igUserId: acc.instagram_id,
+            accessToken: acc.page_access_token, // Use Page Token for Graph API
+            igUserId: acc.ig_user_id,
             source: 'instagram_accounts',
-            dbId: acc.id // Useful for marking invalid
+            dbId: acc.id
         };
     }
 
-    // B) Fallback: ig_connections
-    const { data: conn } = await supabaseAdmin
-        .from('ig_connections')
+    // 2. Fallback: Try matching by page_id if recipient is actually page_id (edge case)
+    const { data: pageAcc } = await supabaseAdmin
+        .from('instagram_accounts')
         .select('*')
-        .or(`instagram_business_account_id.eq.${recipientId},instagram_scoped_id.eq.${recipientId},ig_user_id.eq.${recipientId}`)
+        .eq('page_id', recipientId)
+        .is('disconnected_at', null)
         .maybeSingle();
 
-    if (conn) {
-        console.log(`[RESOLVE_ACCOUNT] Using Legacy ig_connections for ${recipientId}`);
+    if (pageAcc && pageAcc.page_access_token) {
         return {
-            userId: conn.user_id,
-            accessToken: conn.access_token,
-            igUserId: conn.instagram_business_account_id || conn.ig_user_id,
-            source: 'ig_connections',
-            dbId: conn.id
+            userId: pageAcc.user_id,
+            accessToken: pageAcc.page_access_token,
+            igUserId: pageAcc.ig_user_id,
+            source: 'instagram_accounts_page_match',
+            dbId: pageAcc.id
         };
     }
 
