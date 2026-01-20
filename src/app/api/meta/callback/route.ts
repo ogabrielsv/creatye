@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { NextRequest, NextResponse } from 'next/server'
 import { v4 as uuidv4 } from 'uuid'
+import { createClient as createSupabaseClient } from '@supabase/supabase-js'
 
 export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
@@ -8,21 +9,27 @@ export async function GET(request: NextRequest) {
     const error = searchParams.get('error')
     const state = searchParams.get('state')
 
+    const redirectBase = new URL('/settings', request.url)
+
     if (error) {
-        return NextResponse.redirect(new URL(`/automations?error=${error}`, request.url))
+        redirectBase.searchParams.set('error', error)
+        return NextResponse.redirect(redirectBase)
     }
 
     if (!code) {
-        return NextResponse.redirect(new URL('/automations?error=no_code', request.url))
+        redirectBase.searchParams.set('error', 'no_code')
+        return NextResponse.redirect(redirectBase)
     }
 
-    // Validate State using request cookies (Fix for Next.js 500 error)
+    // Validate State using request cookies
     const storedState = request.cookies.get('meta_oauth_state')?.value
 
     if (!state || state !== storedState) {
-        return NextResponse.redirect(new URL('/automations?error=invalid_state', request.url))
+        redirectBase.searchParams.set('error', 'invalid_state')
+        return NextResponse.redirect(redirectBase)
     }
 
+    // Auth Check
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
 
@@ -31,113 +38,105 @@ export async function GET(request: NextRequest) {
     }
 
     try {
-        const INSTAGRAM_APP_ID = process.env.INSTAGRAM_APP_ID
-        const INSTAGRAM_APP_SECRET = process.env.INSTAGRAM_APP_SECRET
-        const REDIRECT_URI = process.env.META_REDIRECT_URI || `${process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/api/meta/callback`
+        const INSTAGRAM_APP_ID = process.env.META_APP_ID || process.env.INSTAGRAM_APP_ID
+        const INSTAGRAM_APP_SECRET = process.env.META_APP_SECRET || process.env.INSTAGRAM_APP_SECRET
+        const REDIRECT_URI = process.env.META_REDIRECT_URI || `${process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_SITE_URL}/api/meta/callback`
 
         if (!INSTAGRAM_APP_ID || !INSTAGRAM_APP_SECRET) {
-            throw new Error('Missing Instagram App Credentials')
+            throw new Error('Missing App Credentials Envs')
         }
 
-        // 1. Exchange Code for Short-Lived Access Token
-        const params = new URLSearchParams()
-        params.append('client_id', INSTAGRAM_APP_ID)
-        params.append('client_secret', INSTAGRAM_APP_SECRET)
-        params.append('grant_type', 'authorization_code')
-        params.append('redirect_uri', REDIRECT_URI)
-        params.append('code', code)
-
-        const tokenRes = await fetch('https://api.instagram.com/oauth/access_token', {
-            method: 'POST',
-            body: params
-        })
+        // 1. Exchange Code for Access Token
+        const tokenRes = await fetch(
+            `https://graph.facebook.com/v19.0/oauth/access_token?client_id=${INSTAGRAM_APP_ID}&client_secret=${INSTAGRAM_APP_SECRET}&redirect_uri=${REDIRECT_URI}&code=${code}`
+        )
         const tokenData = await tokenRes.json()
 
-        if (tokenData.error_message || tokenData.error) {
-            throw new Error(tokenData.error_message || JSON.stringify(tokenData.error))
+        if (tokenData.error) {
+            throw new Error(tokenData.error.message)
         }
 
-        const shortLivedToken = tokenData.access_token
+        const accessToken = tokenData.access_token
 
-        // 2. Exchange for Long-Lived Token
-        const longLivedRes = await fetch(
-            `https://graph.instagram.com/access_token?grant_type=ig_exchange_token&client_secret=${INSTAGRAM_APP_SECRET}&access_token=${shortLivedToken}`
+        // 2. Get User's Pages and Instagram Accounts
+        // We need the Connected Instagram Account ID and the Page Access Token
+        const pagesRes = await fetch(
+            `https://graph.facebook.com/v19.0/me/accounts?fields=id,name,access_token,instagram_business_account{id,username,profile_picture_url}&access_token=${accessToken}`
         )
-        const longLivedData = await longLivedRes.json()
+        const pagesData = await pagesRes.json()
 
-        if (longLivedData.error) {
-            throw new Error(longLivedData.error.message)
+        if (pagesData.error) {
+            throw new Error(pagesData.error.message)
         }
 
-        // ... (Token Exchange remains same) ...
+        const pages = pagesData.data || []
+        let connectedAccount = null
 
-        const longLivedToken = longLivedData.access_token || shortLivedToken
-        const expiresSeconds = longLivedData.expires_in || 5184000
-        const expiresAt = new Date(Date.now() + expiresSeconds * 1000).toISOString()
+        // Find the first page with a connected Instagram Business Account
+        for (const page of pages) {
+            if (page.instagram_business_account && page.instagram_business_account.id) {
+                connectedAccount = {
+                    pageId: page.id,
+                    pageName: page.name,
+                    pageAccessToken: page.access_token, // IMPORTANT: Use THIS token for graph API calls
+                    igUserId: page.instagram_business_account.id,
+                    username: page.instagram_business_account.username,
+                    profilePic: page.instagram_business_account.profile_picture_url
+                }
+                break
+            }
+        }
 
-        // 3. Get User Details (Graph API)
-        // With 'instagram_business_basic', 'me' returns the user node.
-        const userDetailsRes = await fetch(
-            `https://graph.instagram.com/v19.0/me?fields=id,username,account_type,profile_picture_url&access_token=${longLivedToken}`
+        if (!connectedAccount) {
+            throw new Error('No Instagram Business Account connected to your Facebook Pages. Please connect one in Facebook Page Settings.')
+        }
+
+        // 3. Save to Supabase (using Service Role to bypass potential RLS during upserts if needed, though authenticating as user is better if policies allow)
+        // We use Admin client here to ensure we can write to system tables if needed, but primarily to follow the request instruction to be robust.
+        // Actually, adhering to RLS is better, but the user requested explicit service role usage in step 4.
+
+        const supabaseAdmin = createSupabaseClient(
+            process.env.NEXT_PUBLIC_SUPABASE_URL!,
+            process.env.SUPABASE_SERVICE_ROLE_KEY!,
+            {
+                auth: { persistSession: false }
+            }
         )
-        const userDetails = await userDetailsRes.json()
 
-        if (userDetails.error) {
-            throw new Error(userDetails.error.message)
-        }
-
-        const finalIgUserId = userDetails.id
-        const finalIgUsername = userDetails.username
-        const finalIgProfilePic = userDetails.profile_picture_url || null
-
-        console.log(`[IG_CONNECT] saved mapping user_id=${user.id} instagram_id=${finalIgUserId} username=${finalIgUsername}`);
-
-        // 4. Save to Supabase
-
-        // A) Legacy support (ig_connections) - maintaining to avoid breaking other parts immediately
-        const connectionPayload: any = {
+        const payload = {
             user_id: user.id,
-            access_token: longLivedToken,
-            token_expires_at: expiresAt,
+            instagram_id: connectedAccount.igUserId,
+            page_id: connectedAccount.pageId,
+            access_token: connectedAccount.pageAccessToken, // Store the PAGE token, it interacts with IG Graph API
+            username: connectedAccount.username,
             updated_at: new Date().toISOString(),
-            connected_at: new Date().toISOString(),
-            ig_user_id: finalIgUserId,
-            instagram_business_account_id: finalIgUserId, // Critical for Webhook Lookup
-            instagram_scoped_id: finalIgUserId,
-            ig_username: finalIgUsername,
-            ig_name: finalIgUsername,
-            ig_profile_picture_url: finalIgProfilePic,
-            page_id: null
+            // Optional: You might want to save Token Expiry if available
         }
 
-        await supabase.from('ig_connections').upsert(connectionPayload, { onConflict: 'user_id' });
-
-        // B) Requested Table (instagram_accounts) - As per Task 1
-        const accountPayload = {
-            id: uuidv4(), // or generated by DB default if omitted, but upsert might need known ID. Using onConflict user_id+instagram_id maybe?
-            user_id: user.id,
-            instagram_id: finalIgUserId,
-            access_token: longLivedToken,
-            username: finalIgUsername,
-            token_expires_at: expiresAt,
-            updated_at: new Date().toISOString()
-        };
-
-        // We use upsert on (user_id, instagram_id) or just instagram_id if unique?
-        // User said unique on instagram_id.
-        const { error: accError } = await supabase
+        const { error: upsertError } = await supabaseAdmin
             .from('instagram_accounts')
-            .upsert(accountPayload, { onConflict: 'instagram_id' });
+            .upsert(payload, { onConflict: 'instagram_id' })
 
-        if (accError) {
-            console.error('Error saving to instagram_accounts:', accError);
-            // Don't fail the whole request if legacy saved ok, but strictly we should warn.
+        if (upsertError) {
+            throw new Error('DB Error: ' + upsertError.message)
         }
 
-        return NextResponse.redirect(new URL('/automations?connected=true', request.url))
+        // Also update legacy table if needed (optional)
+        const legacyPayload = {
+            user_id: user.id,
+            ig_user_id: connectedAccount.igUserId,
+            instagram_business_account_id: connectedAccount.igUserId,
+            access_token: connectedAccount.pageAccessToken,
+            updated_at: new Date().toISOString()
+        }
+        await supabaseAdmin.from('ig_connections').upsert(legacyPayload, { onConflict: 'user_id' })
+
+        redirectBase.searchParams.set('connected', 'true')
+        return NextResponse.redirect(redirectBase)
 
     } catch (err: any) {
-        console.error('Instagram Callback Error:', err)
-        return NextResponse.redirect(new URL(`/automations?error=${encodeURIComponent(err.message)}`, request.url))
+        console.error('Meta Callback Error:', err)
+        redirectBase.searchParams.set('error', err.message || 'Unknown Error')
+        return NextResponse.redirect(redirectBase)
     }
 }
