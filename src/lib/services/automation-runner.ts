@@ -11,7 +11,54 @@ interface IncomingMessage {
     rawEvent: any;
 }
 
-// 0. Helper resolveAccount (Task 4.1)
+// 0. Helper: Safe Insert Execution Log
+// Prevents the webhook from crashing even if logging fails (e.g. 23502, connection error)
+async function safeInsertExecLog(data: {
+    user_id: string;
+    automation_id: string;
+    status: 'success' | 'failed' | 'running';
+    message_text?: string;
+    channel?: string;
+    raw_event?: any;
+    error_message?: string;
+    version_id?: string;
+    extra_payload?: any;
+}) {
+    try {
+        const { user_id, automation_id, status, error_message, raw_event, message_text, channel, version_id, extra_payload } = data;
+
+        // Construct the insert payload matching the schema
+        // automation_executions: id (default), automation_id, user_id, status, error, payload, created_at (default)
+        // Note: We put extra fields in 'payload' JSONB column as the table schema might not have message_text/channel columns directly.
+        // If the table DOES have them, Supabase JS ignores extra fields usually or throws.
+        // Given earlier schema check, 'payload' is the place.
+
+        const dbPayload = {
+            automation_id,
+            user_id,
+            status, // 'running', 'success', 'failed'
+            version_id: version_id || null,
+            error: error_message || null,
+            payload: {
+                message_text,
+                channel,
+                raw_event, // Store the full event for debugging
+                ...(extra_payload || {})
+            }
+        };
+
+        const { error } = await supabaseAdmin.from('automation_executions').insert(dbPayload);
+
+        if (error) {
+            console.error("[EXEC_LOG] Insert failed DB Error:", error);
+        }
+    } catch (err) {
+        // SWALLOW ERROR to protect the flow
+        console.error("[EXEC_LOG] Insert failed Exception:", err);
+    }
+}
+
+// 1. Helper Account Resolution
 async function resolveAccountByRecipientId(recipientId: string) {
     // 1. Try instagram_accounts (Preferred/New Standard)
     const { data: acc } = await supabaseAdmin
@@ -63,14 +110,17 @@ export async function processIncomingMessage(params: IncomingMessage) {
     const { userId, accessToken } = account;
     console.log(`[DM_EVENT] Mapped to user_id=${userId} (via ${account.source})`);
 
-    // B) Buscar automações (Task 4.3 & 3.1)
+    // B) Buscar automações (Supabase Admin)
     const eventIsStoryReply = Boolean(rawEvent?.message?.reply_to?.story);
     const allowedChannels = eventIsStoryReply ? ['dm', 'story_reply'] : ['dm'];
 
     // Normalize text for matching
-    const cleanText = text.trim().toLowerCase();
+    const cleanText = (text || "").trim().toLowerCase();
 
     // Query Automations using supabaseAdmin
+    // We assume 'trigger' column exists on automations OR we fetch it. 
+    // If 'trigger' is not on automations, we might need to join 'automation_triggers'.
+    // However, user specifically asked to use `row.trigger`.
     const { data: automations, error: autoErr } = await supabaseAdmin
         .from('automations')
         .select('id, user_id, status, is_active, trigger_type, trigger, channel, published_version_id, meta')
@@ -87,146 +137,130 @@ export async function processIncomingMessage(params: IncomingMessage) {
         return;
     }
 
-    if (!automations || automations.length === 0) {
-        // 3.5 Log Detailed Failure
-        console.log(`[DM_EVENT] No active DM automations for user ${userId}. AllowedChannels=${JSON.stringify(allowedChannels)} Text="${cleanText}"`);
-
-        // Diagnostic query
-        const { count } = await supabaseAdmin
-            .from('automations')
-            .select('*', { count: 'exact', head: true })
-            .eq('user_id', userId);
-
-        console.log(`[DIAGNOSTIC] Total automations for user ${userId} (ignoring filters): ${count}`);
-
-        // Detailed diagnostic of first 10
-        const { data: diagAutos } = await supabaseAdmin
-            .from('automations')
-            .select('id, status, is_active, trigger_type, channel, trigger')
-            .eq('user_id', userId)
-            .order('updated_at', { ascending: false })
-            .limit(10);
-        console.log('[DIAGNOSTIC] Recent automations:', JSON.stringify(diagAutos));
-
-        return;
-    }
-
-    // C) Matching Logic (3.3)
+    // C) Matching Logic (Robust)
     let matchedAuto: any = null;
-    let matchedTrigger = '';
+    let matchedTriggerInfo = "";
 
-    console.log(`[AUTOMATION_MATCH] Checking ${automations.length} potential automations...`);
+    // Candidate logging list
+    const candidatesLog: string[] = [];
+    const candidates = automations || [];
 
-    for (const auto of automations) {
-        // trigger field in 'automations' table usually holds the keyword directly for simple automations
-        // or we use 'trigger' column. The logic says "Normalizar trigger do banco: trigNorm = (trigger ?? '').trim().toLowerCase()"
+    // Prioritize automations
+    for (const auto of candidates) {
+        // Normalizar trigger do banco
+        const trigNorm = (auto.trigger || "").trim().toLowerCase();
 
-        // Check match_mode from meta or assume contains
-        // The user mentioned "Se automations tiverem campo 'match_mode' / 'correspondencia'". 
-        // Assuming this is in `meta` or passed somehow. The table schema implies `trigger` column holds the keyword?
-        // Let's assume `trigger` is the keyword string, and `meta.match_mode` might exist.
+        // Match Mode
+        const matchMode = auto.meta?.match_mode || auto.meta?.correspondencia || 'contains';
 
-        const triggerKeyword = (auto.trigger || '').trim().toLowerCase();
-        if (!triggerKeyword) continue;
+        candidatesLog.push(`[id=${auto.id} trig="${trigNorm}" mode=${matchMode} ch=${auto.channel}]`);
 
-        const matchMode = auto.meta?.match_mode || 'contains'; // default contains
+        // Ignorar trigger vazio
+        if (!trigNorm) continue;
 
         let isMatch = false;
-        if (matchMode === 'equals') {
-            isMatch = cleanText === triggerKeyword;
+
+        if (matchMode === 'equals' || matchMode === 'exact') {
+            isMatch = cleanText === trigNorm;
         } else {
-            // contains
-            isMatch = cleanText.includes(triggerKeyword);
+            // Default: contains
+            isMatch = cleanText.includes(trigNorm);
         }
 
         if (isMatch) {
             matchedAuto = auto;
-            matchedTrigger = triggerKeyword;
-            break;
+            matchedTriggerInfo = trigNorm;
+            break; // Stop at first match
         }
     }
 
     if (!matchedAuto) {
-        console.log(`[DM_EVENT] [NO_MATCH] Text="${cleanText}" User=${userId} ValidCandidates=${automations.length}`);
+        // Log Detailed Failure before returning
+        console.log(`[DM_EVENT] [NO_MATCH] Text="${cleanText}" User=${userId}`);
+        console.log(`[DM_EVENT] Candidates (First 20): ${candidatesLog.slice(0, 20).join(', ')}`);
+
+        // Diagnostic: Total automations count
+        const { count } = await supabaseAdmin.from('automations').select('*', { count: 'exact', head: true }).eq('user_id', userId);
+        console.log(`[DIAGNOSTIC] Total user automations: ${count}`);
+
         return;
     }
 
-    // 3.4 Log Success
-    console.log(`[DM_EVENT] Found Match! automationId=${matchedAuto.id} trigger="${matchedTrigger}" channel=${matchedAuto.channel}`);
+    console.log(`[DM_EVENT] Found Match! automationId=${matchedAuto.id} trigger="${matchedTriggerInfo}" channel=${matchedAuto.channel}`);
 
-    // D) Execução
-    const { data: exec, error: execErr } = await supabaseAdmin.from('automation_executions').insert({
-        automation_id: matchedAuto.id,
-        user_id: userId,
-        version_id: matchedAuto.published_version_id,
-        status: 'running',
-        payload: {
-            source: 'dm',
-            input: text,
-            sender: senderId,
-            recipient_mapped: recipientId
-        },
-        updated_at: new Date().toISOString()
-    }).select('id').single();
-
-    if (execErr) {
-        console.error('[EXEC_LOG] Insert failed:', execErr);
-        return;
-    }
-    const execId = exec.id;
-
-    // Fetch Actions
+    // D) Executar Ações (Send Message FIRST)
+    // Fetch actions first
     const { data: actions } = await supabaseAdmin
         .from('automation_actions')
         .select('*')
         .eq('automation_id', matchedAuto.id)
         .order('created_at', { ascending: true });
 
+    let finalStatus: 'success' | 'failed' = 'success';
+    let errorMessage = '';
+
     if (!actions || actions.length === 0) {
         console.log(`[AUTOMATION_RUN] No actions definition found for ${matchedAuto.id}`);
-        await supabaseAdmin.from('automation_executions')
-            .update({ status: 'success', error_message: 'No actions' })
-            .eq('id', execId);
-        return;
-    }
+        finalStatus = 'failed';
+        errorMessage = 'No actions defined';
+    } else {
+        // Execute Loop
+        try {
+            console.log(`[AUTOMATION_RUN] Executing ${actions.length} actions for ${matchedAuto.id}`);
 
-    // Execute Loop
-    try {
-        console.log(`[AUTOMATION_RUN] Executing ${actions.length} actions for ${execId}`);
-        for (const act of actions) {
-            if (act.kind === 'send_dm') {
-                await sendInstagramDM(accessToken, senderId, act.message_text); // senderId is the user to reply to
-            } else if (act.kind === 'buttons' || act.kind === 'cards') {
-                let content = null;
-                if (act.kind === 'buttons') {
-                    const buttons = (act.metadata?.buttons || []).slice(0, 3).map((b: any) =>
-                        (b.type === 'link' ? { type: 'web_url', url: b.url, title: b.label } : { type: 'postback', title: b.label, payload: 'NEXT' })
-                    );
-                    content = { attachment: { type: "template", payload: { template_type: "button", text: act.message_text || "Opções", buttons } } };
-                } else if (act.kind === 'cards') {
-                    const elements = (act.metadata?.cards || []).slice(0, 10).map((c: any) => ({
-                        title: c.title, subtitle: c.description, image_url: c.image,
-                        buttons: (c.buttons || []).slice(0, 3).map((b: any) => (b.type === 'link' ? { type: 'web_url', url: b.url, title: b.label } : { type: 'postback', title: b.label, payload: 'N' }))
-                    }));
-                    content = { attachment: { type: "template", payload: { template_type: "generic", elements } } };
-                }
+            for (const act of actions) {
+                if (act.kind === 'send_dm') {
+                    await sendInstagramDM(accessToken, senderId, act.message_text);
+                } else if (act.kind === 'buttons' || act.kind === 'cards') {
+                    let content = null;
+                    if (act.kind === 'buttons') {
+                        const buttons = (act.metadata?.buttons || []).slice(0, 3).map((b: any) =>
+                            (b.type === 'link' ? { type: 'web_url', url: b.url, title: b.label } : { type: 'postback', title: b.label, payload: 'NEXT' })
+                        );
+                        content = { attachment: { type: "template", payload: { template_type: "button", text: act.message_text || "Opções", buttons } } };
+                    } else if (act.kind === 'cards') {
+                        const elements = (act.metadata?.cards || []).slice(0, 10).map((c: any) => ({
+                            title: c.title, subtitle: c.description, image_url: c.image,
+                            buttons: (c.buttons || []).slice(0, 3).map((b: any) => (b.type === 'link' ? { type: 'web_url', url: b.url, title: b.label } : { type: 'postback', title: b.label, payload: 'N' }))
+                        }));
+                        content = { attachment: { type: "template", payload: { template_type: "generic", elements } } };
+                    }
 
-                if (content) {
-                    await sendInstagramDM(accessToken, senderId, content);
+                    if (content) {
+                        await sendInstagramDM(accessToken, senderId, content);
+                    }
+                } else if (act.kind === 'delay') {
+                    const ms = (act.metadata?.seconds || 1) * 1000;
+                    await new Promise(r => setTimeout(r, ms));
                 }
-            } else if (act.kind === 'delay') {
-                const ms = (act.metadata?.seconds || 1) * 1000;
-                await new Promise(r => setTimeout(r, ms));
             }
-        }
+            console.log(`[AUTOMATION_RUN] Actions executed successfully.`);
 
-        // Success
-        await supabaseAdmin.from('automation_executions').update({ status: 'success' }).eq('id', execId);
-        console.log(`[AUTOMATION_RUN] Success ${execId}`);
-    } catch (err: any) {
-        console.error(`[EXEC_ERROR] ${err.message}`);
-        await supabaseAdmin.from('automation_executions')
-            .update({ status: 'failed', error_message: err.message })
-            .eq('id', execId);
+        } catch (err: any) {
+            console.error(`[EXEC_ERROR] Action failed: ${err.message}`);
+            finalStatus = 'failed';
+            errorMessage = err.message;
+        }
     }
+
+    // E) Salvar Log (Safe Insert) - Only AFTER actions
+    await safeInsertExecLog({
+        user_id: userId,
+        automation_id: matchedAuto.id,
+        status: finalStatus,
+        error_message: errorMessage,
+        version_id: matchedAuto.published_version_id,
+        channel: filteredChannelForLog(allowedChannels),
+        message_text: text, // The input text
+        raw_event: rawEvent,
+        extra_payload: {
+            sender: senderId,
+            matched_trigger: matchedTriggerInfo
+        }
+    });
+}
+
+function filteredChannelForLog(channels: string[]) {
+    if (channels.includes('story_reply')) return 'story_reply';
+    return 'dm';
 }

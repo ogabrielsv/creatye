@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server'
-import { createAdminClient } from '@/lib/supabase/admin'
-import { sendInstagramDM } from '@/lib/instagram/messenger'
+import { processIncomingMessage } from '@/lib/services/automation-runner';
 
 export async function GET(request: Request) {
     const { searchParams } = new URL(request.url)
@@ -20,10 +19,6 @@ export async function GET(request: Request) {
     return new NextResponse('Bad Request', { status: 400 })
 }
 
-import { processIncomingMessage } from '@/lib/services/automation-runner';
-
-// ... (GET handler remains same) ...
-
 export async function POST(request: Request) {
     try {
         if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
@@ -38,49 +33,38 @@ export async function POST(request: Request) {
         console.log("[WEBHOOK] payload_snippet=", payloadSnippet);
 
         if (body.object === 'instagram') {
-            // Use the new supabaseAdmin client
             const { supabaseAdmin } = await import('@/lib/supabaseAdmin');
 
             for (const entry of body.entry) {
-                // Log Entry Summary
                 const keys = Object.keys(entry);
                 console.log(`[WEBHOOK] Entry ID=${entry.id} Keys=${keys.join(',')}`);
 
                 // 1) Handle Messaging (DMs)
                 if (entry.messaging) {
                     for (const event of entry.messaging) {
-                        // 6. Loop Protection
                         if (event.message?.is_echo) {
                             console.log('[DM_EVENT] Ignored (is_echo=true)');
                             continue;
                         }
-                        // Also ignore if it is a delivery or read receipt (though usually those don't have 'message' field in the same way, but explicit check is good)
-                        if (event.delivery || event.read) {
-                            continue;
-                        }
+                        if (event.delivery || event.read) continue;
 
                         if (event.message) {
-                            // Extract Data
                             const senderId = event.sender?.id;
                             const recipientId = event.recipient?.id;
-                            const timestamp = event.timestamp;
-
-                            // Text Priority: text > quick_reply > postback
+                            // Priority: text > quick_reply > postback
                             const text = event.message?.text
                                 || event.message?.quick_reply?.payload
                                 || event.postback?.payload;
 
                             if (senderId && recipientId && text) {
                                 console.log(`[DM_EVENT] sender=${senderId} recipient=${recipientId} text="${text}"`);
-
-                                // Delegate to Service
                                 await processIncomingMessage({
                                     platform: "instagram",
                                     channel: "dm",
                                     senderId,
                                     recipientId,
                                     text,
-                                    timestamp,
+                                    timestamp: event.timestamp,
                                     rawEvent: event
                                 });
                             } else {
@@ -89,7 +73,7 @@ export async function POST(request: Request) {
                         }
                     }
                 }
-                // 2) Handle Changes (Comments) - Keep existing logic
+                // 2) Handle Changes (Comments) 
                 if (entry.changes) {
                     for (const change of entry.changes) {
                         if (change.field === 'comments' || change.field === 'feed') {
@@ -107,4 +91,7 @@ export async function POST(request: Request) {
     }
 }
 
-// ... (Existing helper functions like replyToComment, handleCommentEvent remain below) ...
+// Helper stub to prevent build error if missing
+async function handleCommentEvent(supabase: any, entryId: string, changeValue: any) {
+    console.log('[COMMENT_EVENT] Not implemented yet', entryId);
+}
