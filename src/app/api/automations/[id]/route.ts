@@ -75,21 +75,42 @@ export async function PUT(req: Request, ctx: Ctx) {
     const body = await req.json();
     const { nodes, edges, status } = body;
 
-    // 1) Update status
-    if (status) {
-        const { error: updateError } = await supabase
-            .from("automations")
-            .update({
-                status,
-                published_at: status === "published" ? new Date().toISOString() : null,
-                updated_at: new Date().toISOString()
-            })
-            .eq("id", id)
-            .eq("user_id", user.id)
-            .is("deleted_at", null);
+    // 1) Prepare Updates
+    const updates: any = {
+        updated_at: new Date().toISOString()
+    };
 
-        if (updateError) return fail("update automations status", updateError);
+    // Determine channel from nodes (if present)
+    if (nodes && Array.isArray(nodes)) {
+        const triggerNodes = nodes.filter((n: any) => n.type === 'triggerNode');
+        const isCommentChannel = triggerNodes.some((n: any) => n.data?.triggerType === 'comment_keyword');
+        const isStoryChannel = triggerNodes.some((n: any) => n.data?.triggerType === 'story_mention');
+
+        // Priority: Comment > Story > DM (default)
+        if (isCommentChannel) updates.channel = 'comment_feed';
+        else if (isStoryChannel) updates.channel = 'dm'; // Story acts as DM usually
+        else updates.channel = 'dm'; // Default to DM
+
+        // Also update trigger keyword in loose column if needed
+        const firstTrig = triggerNodes[0];
+        if (firstTrig?.data?.keyword) updates.trigger = firstTrig.data.keyword;
+        if (firstTrig?.data?.triggerType) updates.trigger_type = firstTrig.data.triggerType;
     }
+
+    if (status) {
+        updates.status = status;
+        if (status === 'published') updates.published_at = new Date().toISOString();
+    }
+
+    // Update Automation Meta
+    const { error: updateError } = await supabase
+        .from("automations")
+        .update(updates)
+        .eq("id", id)
+        .eq("user_id", user.id)
+        .is("deleted_at", null);
+
+    if (updateError) return fail("update automations meta", updateError);
 
     // 2) Save draft
     const { error: upsertDraftErr } = await supabase
