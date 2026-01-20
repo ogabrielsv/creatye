@@ -26,6 +26,11 @@ import { processIncomingMessage } from '@/lib/services/automation-runner';
 
 export async function POST(request: Request) {
     try {
+        if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+            console.error('[FATAL] SUPABASE_SERVICE_ROLE_KEY is missing');
+            return new NextResponse('Server Config Error', { status: 500 });
+        }
+
         const body = await request.json()
 
         // Log controlled snippet
@@ -33,7 +38,9 @@ export async function POST(request: Request) {
         console.log("[WEBHOOK] payload_snippet=", payloadSnippet);
 
         if (body.object === 'instagram') {
-            const supabase = createAdminClient()
+            // Use the new supabaseAdmin client
+            const { supabaseAdmin } = await import('@/lib/supabaseAdmin');
+
             for (const entry of body.entry) {
                 // Log Entry Summary
                 const keys = Object.keys(entry);
@@ -42,7 +49,17 @@ export async function POST(request: Request) {
                 // 1) Handle Messaging (DMs)
                 if (entry.messaging) {
                     for (const event of entry.messaging) {
-                        if (event.message && !event.message.is_echo) {
+                        // 6. Loop Protection
+                        if (event.message?.is_echo) {
+                            console.log('[DM_EVENT] Ignored (is_echo=true)');
+                            continue;
+                        }
+                        // Also ignore if it is a delivery or read receipt (though usually those don't have 'message' field in the same way, but explicit check is good)
+                        if (event.delivery || event.read) {
+                            continue;
+                        }
+
+                        if (event.message) {
                             // Extract Data
                             const senderId = event.sender?.id;
                             const recipientId = event.recipient?.id;
@@ -67,7 +84,7 @@ export async function POST(request: Request) {
                                     rawEvent: event
                                 });
                             } else {
-                                console.log('[DM_EVENT] Ignored (non-text or echo)');
+                                console.log('[DM_EVENT] Ignored (non-text)');
                             }
                         }
                     }
@@ -76,7 +93,7 @@ export async function POST(request: Request) {
                 if (entry.changes) {
                     for (const change of entry.changes) {
                         if (change.field === 'comments' || change.field === 'feed') {
-                            await handleCommentEvent(supabase, entry.id, change.value)
+                            await handleCommentEvent(supabaseAdmin, entry.id, change.value)
                         }
                     }
                 }

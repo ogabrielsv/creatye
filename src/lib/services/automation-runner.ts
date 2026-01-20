@@ -1,4 +1,5 @@
-import { createAdminClient } from "@/lib/supabase/admin";
+import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { sendInstagramDM } from '@/lib/instagram/messenger';
 
 interface IncomingMessage {
     platform: "instagram";
@@ -11,9 +12,9 @@ interface IncomingMessage {
 }
 
 // 0. Helper resolveAccount (Task 4.1)
-async function resolveAccountByRecipientId(supabase: any, recipientId: string) {
+async function resolveAccountByRecipientId(recipientId: string) {
     // 1. Try instagram_accounts (Preferred/New Standard)
-    const { data: acc } = await supabase
+    const { data: acc } = await supabaseAdmin
         .from('instagram_accounts')
         .select('*')
         .eq('instagram_id', recipientId)
@@ -28,8 +29,7 @@ async function resolveAccountByRecipientId(supabase: any, recipientId: string) {
     }
 
     // 2. Fallback ig_connections (Legacy Support)
-    // Checks multiple columns where ID might be stored
-    const { data: conn } = await supabase
+    const { data: conn } = await supabaseAdmin
         .from('ig_connections')
         .select('*')
         .or(`instagram_business_account_id.eq.${recipientId},instagram_scoped_id.eq.${recipientId},ig_user_id.eq.${recipientId}`)
@@ -47,16 +47,15 @@ async function resolveAccountByRecipientId(supabase: any, recipientId: string) {
 }
 
 export async function processIncomingMessage(params: IncomingMessage) {
-    const { senderId, recipientId, text, timestamp } = params;
-    const supabase = createAdminClient();
+    const { senderId, recipientId, text, timestamp, rawEvent } = params;
 
     console.log(`[DM_EVENT] Processing from=${senderId} to_recipient=${recipientId}: "${text}"`);
 
     // A) Identificar conta (Lookup Robust)
-    const account = await resolveAccountByRecipientId(supabase, recipientId);
+    const account = await resolveAccountByRecipientId(recipientId);
 
     if (!account) {
-        // Task 2.3: Log NO_ACCOUNT_MAPPING and return 200 (void)
+        // Task 4.1: Log NO_ACCOUNT_MAPPING and return 200 (void)
         console.log(`[DM_EVENT] NO_ACCOUNT_MAPPING recipientId=${recipientId} (not found in DB)`);
         return;
     }
@@ -65,71 +64,98 @@ export async function processIncomingMessage(params: IncomingMessage) {
     console.log(`[DM_EVENT] Mapped to user_id=${userId} (via ${account.source})`);
 
     // B) Buscar automações (Task 4.3 & 3.1)
-    // Filter by channel DM explicitly
-    const { data: automations } = await supabase
+    const eventIsStoryReply = Boolean(rawEvent?.message?.reply_to?.story);
+    const allowedChannels = eventIsStoryReply ? ['dm', 'story_reply'] : ['dm'];
+
+    // Normalize text for matching
+    const cleanText = text.trim().toLowerCase();
+
+    // Query Automations using supabaseAdmin
+    const { data: automations, error: autoErr } = await supabaseAdmin
         .from('automations')
-        .select(`
-            id, name, published_version_id,
-            automation_triggers (
-                id, trigger_type, trigger_filter,
-                keyword, match_mode 
-            )
-        `)
+        .select('id, user_id, status, is_active, trigger_type, trigger, channel, published_version_id, meta')
         .eq('user_id', userId)
+        .eq('is_active', true)
         .eq('status', 'published')
         .is('deleted_at', null)
-        .or('channel.eq.dm,channel.is.null'); // DM channels (legacy might be null)
+        .eq('trigger_type', 'dm_keyword')
+        .in('channel', allowedChannels)
+        .order('updated_at', { ascending: false });
 
-    if (!automations || automations.length === 0) {
-        console.log(`[DM_EVENT] No active DM automations for user ${userId}`);
+    if (autoErr) {
+        console.error('[DM_EVENT] Error fetching automations:', autoErr);
         return;
     }
 
-    // C) Matching
-    const cleanText = text.trim().toLowerCase();
+    if (!automations || automations.length === 0) {
+        // 3.5 Log Detailed Failure
+        console.log(`[DM_EVENT] No active DM automations for user ${userId}. AllowedChannels=${JSON.stringify(allowedChannels)} Text="${cleanText}"`);
 
+        // Diagnostic query
+        const { count } = await supabaseAdmin
+            .from('automations')
+            .select('*', { count: 'exact', head: true })
+            .eq('user_id', userId);
+
+        console.log(`[DIAGNOSTIC] Total automations for user ${userId} (ignoring filters): ${count}`);
+
+        // Detailed diagnostic of first 10
+        const { data: diagAutos } = await supabaseAdmin
+            .from('automations')
+            .select('id, status, is_active, trigger_type, channel, trigger')
+            .eq('user_id', userId)
+            .order('updated_at', { ascending: false })
+            .limit(10);
+        console.log('[DIAGNOSTIC] Recent automations:', JSON.stringify(diagAutos));
+
+        return;
+    }
+
+    // C) Matching Logic (3.3)
     let matchedAuto: any = null;
-    let matchedTrigger: any = null;
+    let matchedTrigger = '';
 
-    console.log(`[AUTOMATION_MATCH] Checking ${automations.length} active automations...`);
+    console.log(`[AUTOMATION_MATCH] Checking ${automations.length} potential automations...`);
 
     for (const auto of automations) {
-        if (!auto.automation_triggers) continue;
+        // trigger field in 'automations' table usually holds the keyword directly for simple automations
+        // or we use 'trigger' column. The logic says "Normalizar trigger do banco: trigNorm = (trigger ?? '').trim().toLowerCase()"
 
-        for (const trig of auto.automation_triggers) {
-            const filter = trig.trigger_filter || {};
-            const keyword = (filter.keyword || trig.keyword || '').toLowerCase().trim();
-            const matchMode = (filter.match_mode || trig.match_mode || 'contains').toLowerCase();
+        // Check match_mode from meta or assume contains
+        // The user mentioned "Se automations tiverem campo 'match_mode' / 'correspondencia'". 
+        // Assuming this is in `meta` or passed somehow. The table schema implies `trigger` column holds the keyword?
+        // Let's assume `trigger` is the keyword string, and `meta.match_mode` might exist.
 
-            if (!keyword) continue;
+        const triggerKeyword = (auto.trigger || '').trim().toLowerCase();
+        if (!triggerKeyword) continue;
 
-            let isMatch = false;
-            if (matchMode === 'exact' || matchMode === 'equals') {
-                isMatch = cleanText === keyword;
-            } else {
-                // Contains
-                isMatch = cleanText.includes(keyword);
-            }
+        const matchMode = auto.meta?.match_mode || 'contains'; // default contains
 
-            if (isMatch) {
-                matchedAuto = auto;
-                matchedTrigger = trig;
-                break;
-            }
+        let isMatch = false;
+        if (matchMode === 'equals') {
+            isMatch = cleanText === triggerKeyword;
+        } else {
+            // contains
+            isMatch = cleanText.includes(triggerKeyword);
         }
-        if (matchedAuto) break;
+
+        if (isMatch) {
+            matchedAuto = auto;
+            matchedTrigger = triggerKeyword;
+            break;
+        }
     }
 
     if (!matchedAuto) {
-        console.log(`[DM_EVENT] [NO_MATCH] Text="${cleanText}" User=${userId}`);
+        console.log(`[DM_EVENT] [NO_MATCH] Text="${cleanText}" User=${userId} ValidCandidates=${automations.length}`);
         return;
     }
 
-    console.log(`[AUTOMATION_MATCH] Found Match! automationId=${matchedAuto.id} trigger=${matchedTrigger.id}`);
+    // 3.4 Log Success
+    console.log(`[DM_EVENT] Found Match! automationId=${matchedAuto.id} trigger="${matchedTrigger}" channel=${matchedAuto.channel}`);
 
     // D) Execução
-    // 1. Log START (Task 4 - Logs & Exec)
-    const { data: exec, error: execErr } = await supabase.from('automation_executions').insert({
+    const { data: exec, error: execErr } = await supabaseAdmin.from('automation_executions').insert({
         automation_id: matchedAuto.id,
         user_id: userId,
         version_id: matchedAuto.published_version_id,
@@ -149,8 +175,8 @@ export async function processIncomingMessage(params: IncomingMessage) {
     }
     const execId = exec.id;
 
-    // 2. Fetch Actions
-    const { data: actions } = await supabase
+    // Fetch Actions
+    const { data: actions } = await supabaseAdmin
         .from('automation_actions')
         .select('*')
         .eq('automation_id', matchedAuto.id)
@@ -158,22 +184,18 @@ export async function processIncomingMessage(params: IncomingMessage) {
 
     if (!actions || actions.length === 0) {
         console.log(`[AUTOMATION_RUN] No actions definition found for ${matchedAuto.id}`);
-        await supabase.from('automation_executions')
+        await supabaseAdmin.from('automation_executions')
             .update({ status: 'success', error_message: 'No actions' })
             .eq('id', execId);
         return;
     }
 
-    // 3. Execute Loop
+    // Execute Loop
     try {
         console.log(`[AUTOMATION_RUN] Executing ${actions.length} actions for ${execId}`);
         for (const act of actions) {
             if (act.kind === 'send_dm') {
-                await sendInstagramDM({
-                    accessToken,
-                    recipientId: senderId, // We reply TO the sender
-                    text: act.message_text
-                });
+                await sendInstagramDM(accessToken, senderId, act.message_text); // senderId is the user to reply to
             } else if (act.kind === 'buttons' || act.kind === 'cards') {
                 let content = null;
                 if (act.kind === 'buttons') {
@@ -190,48 +212,21 @@ export async function processIncomingMessage(params: IncomingMessage) {
                 }
 
                 if (content) {
-                    await sendInstagramDM({ accessToken, recipientId: senderId, content });
+                    await sendInstagramDM(accessToken, senderId, content);
                 }
+            } else if (act.kind === 'delay') {
+                const ms = (act.metadata?.seconds || 1) * 1000;
+                await new Promise(r => setTimeout(r, ms));
             }
         }
 
         // Success
-        await supabase.from('automation_executions').update({ status: 'success' }).eq('id', execId);
+        await supabaseAdmin.from('automation_executions').update({ status: 'success' }).eq('id', execId);
         console.log(`[AUTOMATION_RUN] Success ${execId}`);
-
     } catch (err: any) {
         console.error(`[EXEC_ERROR] ${err.message}`);
-        await supabase.from('automation_executions')
+        await supabaseAdmin.from('automation_executions')
             .update({ status: 'failed', error_message: err.message })
             .eq('id', execId);
     }
-}
-
-// 3) Funcao de Envio (SERVICE)
-async function sendInstagramDM({ accessToken, recipientId, text, content }: { accessToken: string, recipientId: string, text?: string, content?: any }) {
-    const url = `https://graph.facebook.com/v19.0/me/messages?access_token=${accessToken}`;
-
-    let body: any = { recipient: { id: recipientId } };
-    if (content) {
-        body.message = content;
-    } else {
-        body.message = { text: text };
-    }
-
-    // Call Graph API
-    const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-    });
-
-    const responseBody = await res.json();
-
-    if (!res.ok) {
-        console.error("[SEND_ERROR]", { status: res.status, body: responseBody });
-        throw new Error(`Graph API Info: ${JSON.stringify(responseBody)}`);
-    }
-
-    console.log("[SEND] OK", { recipientId });
-    return responseBody;
 }
