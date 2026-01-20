@@ -2,6 +2,8 @@ import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { v4 as uuidv4 } from 'uuid'
 
+export const dynamic = 'force-dynamic'
+
 export async function GET(request: Request) {
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
@@ -10,11 +12,14 @@ export async function GET(request: Request) {
         return NextResponse.redirect(new URL('/login', request.url))
     }
 
-    const INSTAGRAM_APP_ID = process.env.META_APP_ID
-    const REDIRECT_URI = process.env.META_REDIRECT_URI
+    const client_id = process.env.META_APP_ID
+    const redirect_uri = process.env.META_REDIRECT_URI
 
-    if (!INSTAGRAM_APP_ID || !REDIRECT_URI) {
-        return NextResponse.json({ error: 'Missing META_APP_ID or META_REDIRECT_URI' }, { status: 500 })
+    if (!client_id || !redirect_uri) {
+        return NextResponse.json(
+            { error: 'Configuração do Instagram ausente (META_APP_ID/META_APP_SECRET/META_REDIRECT_URI).' },
+            { status: 500 }
+        )
     }
 
     // Generate state securely
@@ -28,7 +33,7 @@ export async function GET(request: Request) {
         'pages_read_engagement'
     ].join(',')
 
-    const authUrl = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${INSTAGRAM_APP_ID}&redirect_uri=${REDIRECT_URI}&response_type=code&scope=${scopes}&state=${state}`
+    const authUrl = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${client_id}&redirect_uri=${redirect_uri}&response_type=code&scope=${scopes}&state=${state}`
 
     const response = NextResponse.redirect(authUrl)
 

@@ -2,6 +2,8 @@ import { createClient } from '@/lib/supabase/server'
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient as createSupabaseClient } from '@supabase/supabase-js'
 
+export const dynamic = 'force-dynamic'
+
 export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const code = searchParams.get('code')
@@ -26,12 +28,8 @@ export async function GET(request: NextRequest) {
     // Validate State
     const storedState = request.cookies.get('ig_oauth_state')?.value
     if (!state || state !== storedState) {
-        // Fallback: checks if maybe using old cookie name from previous attempts
-        const legacyState = request.cookies.get('meta_oauth_state')?.value
-        if (!state || state !== legacyState) {
-            settingsUrl.searchParams.set('error', 'Estado de segurança inválido (CSRF)')
-            return NextResponse.redirect(settingsUrl)
-        }
+        settingsUrl.searchParams.set('error', 'Estado de segurança inválido (CSRF)')
+        return NextResponse.redirect(settingsUrl)
     }
 
     // Auth Check
@@ -43,17 +41,17 @@ export async function GET(request: NextRequest) {
     }
 
     try {
-        const META_APP_ID = process.env.META_APP_ID
-        const META_APP_SECRET = process.env.META_APP_SECRET
-        const REDIRECT_URI = process.env.META_REDIRECT_URI
+        const client_id = process.env.META_APP_ID
+        const client_secret = process.env.META_APP_SECRET
+        const redirect_uri = process.env.META_REDIRECT_URI
 
-        if (!META_APP_ID || !META_APP_SECRET || !REDIRECT_URI) {
-            throw new Error('Configuração de servidor incompleta (Env vars)')
+        if (!client_id || !client_secret || !redirect_uri) {
+            throw new Error('Configuração do Instagram ausente (META_APP_ID/META_APP_SECRET/META_REDIRECT_URI).')
         }
 
         // 1. Exchange Code for Access Token
         const tokenRes = await fetch(
-            `https://graph.facebook.com/v19.0/oauth/access_token?client_id=${META_APP_ID}&client_secret=${META_APP_SECRET}&redirect_uri=${REDIRECT_URI}&code=${code}`
+            `https://graph.facebook.com/v19.0/oauth/access_token?client_id=${client_id}&client_secret=${client_secret}&redirect_uri=${redirect_uri}&code=${code}`
         )
         const tokenData = await tokenRes.json()
 
