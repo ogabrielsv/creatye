@@ -28,12 +28,14 @@ export async function GET(request: Request) {
 
     // Define scopes required for Instagram Business Login
     // These specific scopes are required for messaging and automation
+    // Define scopes required for Instagram Business Login
+    // These specific scopes are required for messaging and automation
     const scopes = [
         'instagram_basic',
         'instagram_manage_messages',
         'pages_show_list',
         'pages_manage_metadata',
-        'pages_messaging',
+        'pages_read_engagement',
         'business_management'
     ].join(',')
 
