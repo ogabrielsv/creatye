@@ -10,36 +10,62 @@ interface IncomingMessage {
     rawEvent: any;
 }
 
+// 0. Helper resolveAccount (Task 4.1)
+async function resolveAccountByRecipientId(supabase: any, recipientId: string) {
+    // 1. Try instagram_accounts (Preferred/New Standard)
+    const { data: acc } = await supabase
+        .from('instagram_accounts')
+        .select('*')
+        .eq('instagram_id', recipientId)
+        .maybeSingle();
+
+    if (acc) {
+        return {
+            userId: acc.user_id,
+            accessToken: acc.access_token,
+            source: 'instagram_accounts'
+        };
+    }
+
+    // 2. Fallback ig_connections (Legacy Support)
+    // Checks multiple columns where ID might be stored
+    const { data: conn } = await supabase
+        .from('ig_connections')
+        .select('*')
+        .or(`instagram_business_account_id.eq.${recipientId},instagram_scoped_id.eq.${recipientId},ig_user_id.eq.${recipientId}`)
+        .maybeSingle();
+
+    if (conn) {
+        return {
+            userId: conn.user_id,
+            accessToken: conn.access_token,
+            source: 'ig_connections'
+        };
+    }
+
+    return null;
+}
+
 export async function processIncomingMessage(params: IncomingMessage) {
     const { senderId, recipientId, text, timestamp } = params;
     const supabase = createAdminClient();
 
-    console.log(`[DM_EVENT] Processing msg from ${senderId} to ${recipientId}: "${text}"`);
+    console.log(`[DM_EVENT] Processing from=${senderId} to_recipient=${recipientId}: "${text}"`);
 
-    // A) Identificar conta (recipientId = instagram_business_account_id ou instagram_scoped_id?)
-    // Normalmente o webhook envia o ID da página/IG ID no 'id' root do entry,
-    // mas aqui estamos recebendo via params.
-    // Vamos tentar achar a connection que tem esse ID.
+    // A) Identificar conta (Lookup Robust)
+    const account = await resolveAccountByRecipientId(supabase, recipientId);
 
-    // Tentar achar pelo recipientId (que pode ser o ID do IG Business)
-    let { data: connection, error: connErr } = await supabase
-        .from('ig_connections')
-        .select('*')
-        .or(`instagram_business_account_id.eq.${recipientId},instagram_scoped_id.eq.${recipientId}`)
-        .maybeSingle();
-
-    // Se não achou, fallback: pega a account mais recente (modo de debug/dev apenas se desejado,
-    // mas o user pediu "Se não encontrar, logar NO_ACCOUNT_MAPPING e retornar 200")
-    if (!connection) {
-        console.log(`[DM_EVENT] NO_ACCOUNT_MAPPING for recipient ${recipientId}`);
-        // Tentar fallback se for dev (opcional), mas vamos seguir estrito
+    if (!account) {
+        // Task 2.3: Log NO_ACCOUNT_MAPPING and return 200 (void)
+        console.log(`[DM_EVENT] NO_ACCOUNT_MAPPING recipientId=${recipientId} (not found in DB)`);
         return;
     }
 
-    const userId = connection.user_id;
-    const accessToken = connection.access_token;
+    const { userId, accessToken } = account;
+    console.log(`[DM_EVENT] Mapped to user_id=${userId} (via ${account.source})`);
 
-    // B) Buscar automações
+    // B) Buscar automações (Task 4.3 & 3.1)
+    // Filter by channel DM explicitly
     const { data: automations } = await supabase
         .from('automations')
         .select(`
@@ -52,7 +78,7 @@ export async function processIncomingMessage(params: IncomingMessage) {
         .eq('user_id', userId)
         .eq('status', 'published')
         .is('deleted_at', null)
-        .or('channel.eq.dm,channel.is.null'); // DM channels
+        .or('channel.eq.dm,channel.is.null'); // DM channels (legacy might be null)
 
     if (!automations || automations.length === 0) {
         console.log(`[DM_EVENT] No active DM automations for user ${userId}`);
@@ -61,19 +87,16 @@ export async function processIncomingMessage(params: IncomingMessage) {
 
     // C) Matching
     const cleanText = text.trim().toLowerCase();
-    // Helper para remover pontuação simples se necessário, mas 'includes' resolve a maioria.
-    // User pediu: "oi" casa com "oi", "oi!"
-    // Regex simples para word boundary seria melhor, mas vamos de contains/equals.
 
     let matchedAuto: any = null;
     let matchedTrigger: any = null;
+
+    console.log(`[AUTOMATION_MATCH] Checking ${automations.length} active automations...`);
 
     for (const auto of automations) {
         if (!auto.automation_triggers) continue;
 
         for (const trig of auto.automation_triggers) {
-            // Unify keyword access
-            // trigger_filter jsonb usually has preference, fallback to cols
             const filter = trig.trigger_filter || {};
             const keyword = (filter.keyword || trig.keyword || '').toLowerCase().trim();
             const matchMode = (filter.match_mode || trig.match_mode || 'contains').toLowerCase();
@@ -99,23 +122,13 @@ export async function processIncomingMessage(params: IncomingMessage) {
 
     if (!matchedAuto) {
         console.log(`[DM_EVENT] [NO_MATCH] Text="${cleanText}" User=${userId}`);
-        // Logar execução NO_MATCH 'automation_id' null? 
-        // User pediu: "Se não houver automação válida, logar NO_MATCH e retornar 200"
-        // E também: "Sempre gravar execução em automation_executions"
-        // Se não tem automação ID, gravamos com automation_id NULL se o banco permitir, ou ignoramos gravacao de NO_MATCH globale
-        // O user disse: "Se não encontrar, logar ... e retornar". 
-        // "Gravar execução (status no_match)" -> qual automation_id?
-        // Vamos gravar sem automation_id se a tabela permitir, ou não gravar se for FK not null.
-        // A tabela automation_executions TEM automation_id NOT NULL geralmente? Verifiquei antes: sim, referencia automations(id).
-        // Então não dá pra gravar NO_MATCH sem automation_id.
-        // Vou apenas logar no console.
         return;
     }
 
-    console.log(`[MATCH] automationId=${matchedAuto.id} trigger=${matchedTrigger.id}`);
+    console.log(`[AUTOMATION_MATCH] Found Match! automationId=${matchedAuto.id} trigger=${matchedTrigger.id}`);
 
     // D) Execução
-    // 1. Log START
+    // 1. Log START (Task 4 - Logs & Exec)
     const { data: exec, error: execErr } = await supabase.from('automation_executions').insert({
         automation_id: matchedAuto.id,
         user_id: userId,
@@ -124,7 +137,8 @@ export async function processIncomingMessage(params: IncomingMessage) {
         payload: {
             source: 'dm',
             input: text,
-            sender: senderId
+            sender: senderId,
+            recipient_mapped: recipientId
         },
         updated_at: new Date().toISOString()
     }).select('id').single();
@@ -143,13 +157,16 @@ export async function processIncomingMessage(params: IncomingMessage) {
         .order('created_at', { ascending: true });
 
     if (!actions || actions.length === 0) {
-        console.log(`[MATCH] No actions found for automation ${matchedAuto.id}`);
-        await supabase.from('automation_executions').update({ status: 'success', error_message: 'No actions' }).eq('id', execId);
+        console.log(`[AUTOMATION_RUN] No actions definition found for ${matchedAuto.id}`);
+        await supabase.from('automation_executions')
+            .update({ status: 'success', error_message: 'No actions' })
+            .eq('id', execId);
         return;
     }
 
     // 3. Execute Loop
     try {
+        console.log(`[AUTOMATION_RUN] Executing ${actions.length} actions for ${execId}`);
         for (const act of actions) {
             if (act.kind === 'send_dm') {
                 await sendInstagramDM({
@@ -158,10 +175,6 @@ export async function processIncomingMessage(params: IncomingMessage) {
                     text: act.message_text
                 });
             } else if (act.kind === 'buttons' || act.kind === 'cards') {
-                // Logic for structured msg
-                // This logic is duplicated from webhook/meta logic, ideally unified msg builder.
-                // Doing basic text fallback or implementing builder if needed.
-                // Let's implement basic builder here for buttons.
                 let content = null;
                 if (act.kind === 'buttons') {
                     const buttons = (act.metadata?.buttons || []).slice(0, 3).map((b: any) =>
@@ -184,7 +197,7 @@ export async function processIncomingMessage(params: IncomingMessage) {
 
         // Success
         await supabase.from('automation_executions').update({ status: 'success' }).eq('id', execId);
-        console.log(`[EXEC_LOG] Success ${execId}`);
+        console.log(`[AUTOMATION_RUN] Success ${execId}`);
 
     } catch (err: any) {
         console.error(`[EXEC_ERROR] ${err.message}`);
@@ -195,7 +208,6 @@ export async function processIncomingMessage(params: IncomingMessage) {
 }
 
 // 3) Funcao de Envio (SERVICE)
-// Agora usando axios ou fetch robusto
 async function sendInstagramDM({ accessToken, recipientId, text, content }: { accessToken: string, recipientId: string, text?: string, content?: any }) {
     const url = `https://graph.facebook.com/v19.0/me/messages?access_token=${accessToken}`;
 
@@ -206,6 +218,7 @@ async function sendInstagramDM({ accessToken, recipientId, text, content }: { ac
         body.message = { text: text };
     }
 
+    // Call Graph API
     const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
