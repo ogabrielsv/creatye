@@ -28,11 +28,6 @@ async function safeInsertExecLog(data: {
         const { user_id, automation_id, status, error_message, raw_event, message_text, channel, version_id, extra_payload } = data;
 
         // Construct the insert payload matching the schema
-        // automation_executions: id (default), automation_id, user_id, status, error, payload, created_at (default)
-        // Note: We put extra fields in 'payload' JSONB column as the table schema might not have message_text/channel columns directly.
-        // If the table DOES have them, Supabase JS ignores extra fields usually or throws.
-        // Given earlier schema check, 'payload' is the place.
-
         const dbPayload = {
             automation_id,
             user_id,
@@ -96,13 +91,17 @@ async function resolveAccountByRecipientId(recipientId: string) {
 export async function processIncomingMessage(params: IncomingMessage) {
     const { senderId, recipientId, text, timestamp, rawEvent } = params;
 
-    console.log(`[DM_EVENT] Processing from=${senderId} to_recipient=${recipientId}: "${text}"`);
+    // 1. Detect Event Channel properly
+    // If it has reply_to.story, it's a story_reply. Otherwise, it's a dm.
+    const isStoryReply = Boolean(rawEvent?.message?.reply_to?.story);
+    const eventChannel = isStoryReply ? 'story_reply' : 'dm';
+
+    console.log(`[DM_EVENT] Processing from=${senderId} to_recipient=${recipientId} Channel=${eventChannel} RawText="${text}"`);
 
     // A) Identificar conta (Lookup Robust)
     const account = await resolveAccountByRecipientId(recipientId);
 
     if (!account) {
-        // Task 4.1: Log NO_ACCOUNT_MAPPING and return 200 (void)
         console.log(`[DM_EVENT] NO_ACCOUNT_MAPPING recipientId=${recipientId} (not found in DB)`);
         return;
     }
@@ -111,25 +110,21 @@ export async function processIncomingMessage(params: IncomingMessage) {
     console.log(`[DM_EVENT] Mapped to user_id=${userId} (via ${account.source})`);
 
     // B) Buscar automações (Supabase Admin)
-    const eventIsStoryReply = Boolean(rawEvent?.message?.reply_to?.story);
-    const allowedChannels = eventIsStoryReply ? ['dm', 'story_reply'] : ['dm'];
-
-    // Normalize text for matching
     const cleanText = (text || "").trim().toLowerCase();
 
-    // Query Automations using supabaseAdmin
-    // We assume 'trigger' column exists on automations OR we fetch it. 
-    // If 'trigger' is not on automations, we might need to join 'automation_triggers'.
-    // However, user specifically asked to use `row.trigger`.
+    // Use .or() syntax for the channel check: channel == eventChannel OR channels contains [eventChannel]
+    const channelFilter = `channel.eq.${eventChannel},channels.cs.["${eventChannel}"]`;
+
+    // Fetch automations
     const { data: automations, error: autoErr } = await supabaseAdmin
         .from('automations')
-        .select('id, user_id, status, is_active, trigger_type, trigger, channel, published_version_id, meta')
+        .select('id, user_id, status, is_active, trigger_type, trigger, channel, channels, published_version_id, meta')
         .eq('user_id', userId)
         .eq('is_active', true)
         .eq('status', 'published')
         .is('deleted_at', null)
         .eq('trigger_type', 'dm_keyword')
-        .in('channel', allowedChannels)
+        .or(channelFilter)
         .order('updated_at', { ascending: false });
 
     if (autoErr) {
@@ -137,15 +132,16 @@ export async function processIncomingMessage(params: IncomingMessage) {
         return;
     }
 
+    const fetchedCount = automations?.length || 0;
+    console.log(`[DM_EVENT] Fetched ${fetchedCount} candidates for Channel=${eventChannel} TextNorm="${cleanText}"`);
+
     // C) Matching Logic (Robust)
     let matchedAuto: any = null;
     let matchedTriggerInfo = "";
 
-    // Candidate logging list
     const candidatesLog: string[] = [];
     const candidates = automations || [];
 
-    // Prioritize automations
     for (const auto of candidates) {
         // Normalizar trigger do banco
         const trigNorm = (auto.trigger || "").trim().toLowerCase();
@@ -153,7 +149,8 @@ export async function processIncomingMessage(params: IncomingMessage) {
         // Match Mode
         const matchMode = auto.meta?.match_mode || auto.meta?.correspondencia || 'contains';
 
-        candidatesLog.push(`[id=${auto.id} trig="${trigNorm}" mode=${matchMode} ch=${auto.channel}]`);
+        // Debug info
+        candidatesLog.push(`[id=${auto.id} trig="${trigNorm}" mode=${matchMode} ch_col=${auto.channel} channels=${JSON.stringify(auto.channels)}]`);
 
         // Ignorar trigger vazio
         if (!trigNorm) continue;
@@ -176,20 +173,26 @@ export async function processIncomingMessage(params: IncomingMessage) {
 
     if (!matchedAuto) {
         // Log Detailed Failure before returning
-        console.log(`[DM_EVENT] [NO_MATCH] Text="${cleanText}" User=${userId}`);
-        console.log(`[DM_EVENT] Candidates (First 20): ${candidatesLog.slice(0, 20).join(', ')}`);
+        console.log(`[DM_EVENT] [NO_MATCH] Channel=${eventChannel} Text="${cleanText}" User=${userId}`);
+        console.log(`[DM_EVENT] Candidates checked: ${candidatesLog.slice(0, 20).join(', ')}`);
 
-        // Diagnostic: Total automations count
-        const { count } = await supabaseAdmin.from('automations').select('*', { count: 'exact', head: true }).eq('user_id', userId);
-        console.log(`[DIAGNOSTIC] Total user automations: ${count}`);
+        if (candidatesLog.length === 0) {
+            const { count } = await supabaseAdmin
+                .from('automations')
+                .select('*', { count: 'exact', head: true })
+                .eq('user_id', userId)
+                .eq('status', 'published')
+                .eq('is_active', true);
+            console.log(`[DIAGNOSTIC] Total active/published automations for user (ignoring channel filters): ${count}`);
+        }
 
         return;
     }
 
-    console.log(`[DM_EVENT] Found Match! automationId=${matchedAuto.id} trigger="${matchedTriggerInfo}" channel=${matchedAuto.channel}`);
+    console.log(`[DM_EVENT] [MATCH] Found! AutomationId=${matchedAuto.id} Trigger="${matchedTriggerInfo}" Channel=${eventChannel}`);
 
-    // D) Executar Ações (Send Message FIRST)
-    // Fetch actions first
+    // D) Executar Ações
+    // Fetch actions
     const { data: actions } = await supabaseAdmin
         .from('automation_actions')
         .select('*')
@@ -243,24 +246,20 @@ export async function processIncomingMessage(params: IncomingMessage) {
         }
     }
 
-    // E) Salvar Log (Safe Insert) - Only AFTER actions
+    // E) Salvar Log (Safe Insert)
     await safeInsertExecLog({
         user_id: userId,
         automation_id: matchedAuto.id,
         status: finalStatus,
         error_message: errorMessage,
         version_id: matchedAuto.published_version_id,
-        channel: filteredChannelForLog(allowedChannels),
-        message_text: text, // The input text
+        channel: eventChannel,
+        message_text: text,
         raw_event: rawEvent,
         extra_payload: {
             sender: senderId,
-            matched_trigger: matchedTriggerInfo
+            matched_trigger: matchedTriggerInfo,
+            match_channel: eventChannel
         }
     });
-}
-
-function filteredChannelForLog(channels: string[]) {
-    if (channels.includes('story_reply')) return 'story_reply';
-    return 'dm';
 }
