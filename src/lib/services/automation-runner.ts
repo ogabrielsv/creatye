@@ -22,22 +22,31 @@ async function safeInsertExecLog(data: {
     raw_event?: any;
     error_message?: string;
     version_id?: string;
+    sender_id?: string; // We map this to ig_user_id
     extra_payload?: any;
 }) {
     try {
-        const { user_id, automation_id, status, error_message, raw_event, message_text, channel, version_id, extra_payload } = data;
+        const { user_id, automation_id, status, error_message, raw_event, message_text, channel, version_id, sender_id, extra_payload } = data;
 
         // Construct the insert payload matching the schema
+        // automation_executions: id (default), automation_id, user_id, status, error, payload, created_at, VERSION_ID, IG_USER_ID
+        // IMPORTANT: ig_user_id must be NOT NULL according to error 23502
+
+        // Strategy: Use sender_id for ig_user_id. If missing, we MUST provide a fallback or ensure it's not null.
+        // It seems the table schema demands `ig_user_id` (the person who triggered execution, aka Instagram User ID).
+        const igUserId = sender_id || raw_event?.sender?.id || "unknown_sender";
+
         const dbPayload = {
             automation_id,
             user_id,
             status, // 'running', 'success', 'failed'
             version_id: version_id || null,
             error: error_message || null,
+            ig_user_id: igUserId, // FIX FOR 23502
             payload: {
                 message_text,
                 channel,
-                raw_event, // Store the full event for debugging
+                raw_event: raw_event, // Store the full event for debugging
                 ...(extra_payload || {})
             }
         };
@@ -63,9 +72,13 @@ async function resolveAccountByRecipientId(recipientId: string) {
         .maybeSingle();
 
     if (acc) {
+        // Prioritize correct token: page_access_token (Graph API) > access_token (Legacy)
+        const token = acc.page_access_token || acc.access_token;
+
         return {
             userId: acc.user_id,
-            accessToken: acc.access_token,
+            accessToken: token,
+            igUserId: acc.instagram_id, // This is the business account ID usually
             source: 'instagram_accounts'
         };
     }
@@ -78,9 +91,11 @@ async function resolveAccountByRecipientId(recipientId: string) {
         .maybeSingle();
 
     if (conn) {
+        const token = conn.access_token; // usually legacy
         return {
             userId: conn.user_id,
-            accessToken: conn.access_token,
+            accessToken: token,
+            igUserId: conn.instagram_business_account_id || conn.ig_user_id,
             source: 'ig_connections'
         };
     }
@@ -92,30 +107,26 @@ export async function processIncomingMessage(params: IncomingMessage) {
     const { senderId, recipientId, text, timestamp, rawEvent } = params;
 
     // 1. Detect Event Channel properly
-    // If it has reply_to.story, it's a story_reply. Otherwise, it's a dm.
     const isStoryReply = Boolean(rawEvent?.message?.reply_to?.story);
     const eventChannel = isStoryReply ? 'story_reply' : 'dm';
 
-    console.log(`[DM_EVENT] Processing from=${senderId} to_recipient=${recipientId} Channel=${eventChannel} RawText="${text}"`);
+    console.log(`[DM_EVENT] Processing from=${senderId} to_recipient=${recipientId} Channel=${eventChannel} Text="${text}"`);
 
-    // A) Identificar conta (Lookup Robust)
+    // A) Identificar conta
     const account = await resolveAccountByRecipientId(recipientId);
 
     if (!account) {
-        console.log(`[DM_EVENT] NO_ACCOUNT_MAPPING recipientId=${recipientId} (not found in DB)`);
+        console.log(`[DM_EVENT] NO_ACCOUNT_MAPPING recipientId=${recipientId}`);
         return;
     }
 
-    const { userId, accessToken } = account;
-    console.log(`[DM_EVENT] Mapped to user_id=${userId} (via ${account.source})`);
+    const { userId, accessToken, source } = account;
+    console.log(`[DM_EVENT] Mapped to user_id=${userId} (via ${source})`);
 
-    // B) Buscar automações (Supabase Admin)
+    // B) Buscar automações
     const cleanText = (text || "").trim().toLowerCase();
-
-    // Use .or() syntax for the channel check: channel == eventChannel OR channels contains [eventChannel]
     const channelFilter = `channel.eq.${eventChannel},channels.cs.["${eventChannel}"]`;
 
-    // Fetch automations
     const { data: automations, error: autoErr } = await supabaseAdmin
         .from('automations')
         .select('id, user_id, status, is_active, trigger_type, trigger, channel, channels, published_version_id, meta')
@@ -132,67 +143,45 @@ export async function processIncomingMessage(params: IncomingMessage) {
         return;
     }
 
-    const fetchedCount = automations?.length || 0;
-    console.log(`[DM_EVENT] Fetched ${fetchedCount} candidates for Channel=${eventChannel} TextNorm="${cleanText}"`);
-
-    // C) Matching Logic (Robust)
+    // C) Matching Logic
     let matchedAuto: any = null;
     let matchedTriggerInfo = "";
 
+    // Detailed logs for matching
     const candidatesLog: string[] = [];
     const candidates = automations || [];
 
     for (const auto of candidates) {
-        // Normalizar trigger do banco
         const trigNorm = (auto.trigger || "").trim().toLowerCase();
-
-        // Match Mode
         const matchMode = auto.meta?.match_mode || auto.meta?.correspondencia || 'contains';
 
-        // Debug info
-        candidatesLog.push(`[id=${auto.id} trig="${trigNorm}" mode=${matchMode} ch_col=${auto.channel} channels=${JSON.stringify(auto.channels)}]`);
+        candidatesLog.push(`[id=${auto.id} trig="${trigNorm}" mode=${matchMode}]`);
 
-        // Ignorar trigger vazio
         if (!trigNorm) continue;
 
         let isMatch = false;
-
         if (matchMode === 'equals' || matchMode === 'exact') {
             isMatch = cleanText === trigNorm;
         } else {
-            // Default: contains
             isMatch = cleanText.includes(trigNorm);
         }
 
         if (isMatch) {
             matchedAuto = auto;
             matchedTriggerInfo = trigNorm;
-            break; // Stop at first match
+            break;
         }
     }
 
     if (!matchedAuto) {
-        // Log Detailed Failure before returning
-        console.log(`[DM_EVENT] [NO_MATCH] Channel=${eventChannel} Text="${cleanText}" User=${userId}`);
-        console.log(`[DM_EVENT] Candidates checked: ${candidatesLog.slice(0, 20).join(', ')}`);
-
-        if (candidatesLog.length === 0) {
-            const { count } = await supabaseAdmin
-                .from('automations')
-                .select('*', { count: 'exact', head: true })
-                .eq('user_id', userId)
-                .eq('status', 'published')
-                .eq('is_active', true);
-            console.log(`[DIAGNOSTIC] Total active/published automations for user (ignoring channel filters): ${count}`);
-        }
-
+        console.log(`[DM_EVENT] [NO_MATCH] Text="${cleanText}" User=${userId}`);
+        console.log(`[DM_EVENT] Candidates: ${candidatesLog.slice(0, 5).join(', ')}`);
         return;
     }
 
-    console.log(`[DM_EVENT] [MATCH] Found! AutomationId=${matchedAuto.id} Trigger="${matchedTriggerInfo}" Channel=${eventChannel}`);
+    console.log(`[DM_EVENT] [MATCH] Found! AutomationId=${matchedAuto.id} Trigger="${matchedTriggerInfo}"`);
 
     // D) Executar Ações
-    // Fetch actions
     const { data: actions } = await supabaseAdmin
         .from('automation_actions')
         .select('*')
@@ -209,12 +198,20 @@ export async function processIncomingMessage(params: IncomingMessage) {
     } else {
         // Execute Loop
         try {
+            // Token Validation Check
+            if (!accessToken || accessToken.length < 15) {
+                throw new Error('Missing/invalid IG access token. Reconnect Instagram account.');
+            }
+            console.log(`[AUTOMATION_RUN] Using token (len=${accessToken.length}): ${accessToken.substring(0, 6)}...`);
+
             console.log(`[AUTOMATION_RUN] Executing ${actions.length} actions for ${matchedAuto.id}`);
 
             for (const act of actions) {
                 if (act.kind === 'send_dm') {
+                    // Send DM using SenderID from the event
                     await sendInstagramDM(accessToken, senderId, act.message_text);
                 } else if (act.kind === 'buttons' || act.kind === 'cards') {
+                    // ... Buttons/Cards Logic ...
                     let content = null;
                     if (act.kind === 'buttons') {
                         const buttons = (act.metadata?.buttons || []).slice(0, 3).map((b: any) =>
@@ -247,6 +244,7 @@ export async function processIncomingMessage(params: IncomingMessage) {
     }
 
     // E) Salvar Log (Safe Insert)
+    // Pass senderId as sender_id to map to ig_user_id
     await safeInsertExecLog({
         user_id: userId,
         automation_id: matchedAuto.id,
@@ -255,9 +253,9 @@ export async function processIncomingMessage(params: IncomingMessage) {
         version_id: matchedAuto.published_version_id,
         channel: eventChannel,
         message_text: text,
+        sender_id: senderId, // IMPORTANT for 23502 fix
         raw_event: rawEvent,
         extra_payload: {
-            sender: senderId,
             matched_trigger: matchedTriggerInfo,
             match_channel: eventChannel
         }
