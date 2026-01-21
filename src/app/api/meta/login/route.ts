@@ -47,7 +47,7 @@ export async function GET(request: Request) {
 
     // Set a short-lived cookie for state verification
     response.cookies.set('meta_oauth_state', state, {
-        httpOnly: true, Send "Eu quer
+        httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
         path: '/',
         maxAge: 600, // 10 minutes
