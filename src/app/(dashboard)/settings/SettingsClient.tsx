@@ -32,14 +32,14 @@ export default function SettingsClient() {
 
   // Status message logic
   const statusMsg = useMemo(() => {
-    if (connected === "conectado") return { type: "success", text: "Instagram conectado com sucesso! ✅" };
+    if (connected === "connected") return { type: "success", text: "Instagram conectado com sucesso!" };
     if (error) return { type: "error", text: decodeURIComponent(error) };
     return null;
   }, [connected, error]);
 
   const fetchStatus = () => {
     setChecking(true);
-    fetch('/api/instagram/status')
+    fetch('/api/instagram/status') // reusing status for basic display check if compatible, else update
       .then(r => r.json())
       .then(d => {
         setData(d);
@@ -54,21 +54,20 @@ export default function SettingsClient() {
 
   const onConnect = () => {
     setLoading(true);
-    window.location.href = "/api/instagram/connect";
+    // Directly go to new connect route
+    window.location.href = "/api/auth/instagram/authorize";
   };
 
   const onDisconnect = async () => {
-    if (!confirm("Tem certeza que deseja desconectar o Instagram? Automações irão parar de funcionar.")) return;
+    if (!confirm("Tem certeza que deseja desconectar o Instagram?")) return;
     setLoading(true);
     try {
       const res = await fetch('/api/instagram/disconnect', { method: 'POST' });
       if (res.ok) {
         setData({ connected: false });
-        router.refresh(); // This might trigger server re-render
-        router.push('/settings?tab=integracoes'); // Clear url params
+        router.push('/settings?tab=integracoes');
       } else {
-        const j = await res.json();
-        alert("Erro: " + (j.error || "Desconhecido"));
+        alert("Erro ao desconectar");
       }
     } catch (e) {
       alert("Erro ao desconectar.");
@@ -90,11 +89,6 @@ export default function SettingsClient() {
     <div style={{ maxWidth: 900, margin: "0 auto", padding: 24 }}>
       <div className="flex justify-between items-center mb-2">
         <h1 className="text-3xl font-bold">Configurações</h1>
-        {isDev && (
-          <a href="/api/instagram/health" target="_blank" className="text-xs text-brand-400 border border-brand-500/30 px-2 py-1 rounded hover:bg-brand-500/10">
-            🔧 Debug API
-          </a>
-        )}
       </div>
       <p className="opacity-70 mb-8">Gerencie suas integrações e preferências.</p>
 
@@ -138,7 +132,7 @@ export default function SettingsClient() {
                   <div className="w-10 h-10 rounded-lg flex items-center justify-center bg-gradient-to-tr from-[#f09433] via-[#dc2743] to-[#bc1888] shadow-lg shadow-pink-900/20">
                     <InstagramIcon className="text-white" />
                   </div>
-                  <h2 className="text-lg font-bold">Instagram Business</h2>
+                  <h2 className="text-lg font-bold">Instagram</h2>
                 </div>
 
                 {data?.connected ? (
@@ -147,11 +141,11 @@ export default function SettingsClient() {
                       <span className="w-2 h-2 rounded-full bg-green-500 block animate-pulse"></span>
                       Conectado como @{data.ig_username || 'Usuário'}
                     </p>
-                    <p className="text-sm opacity-60 mt-1">Suas automações de DM estão ativas e funcionando.</p>
+                    <p className="text-sm opacity-60 mt-1">Sua conta está conectada para automações de mídia.</p>
                   </div>
                 ) : (
                   <p className="text-sm opacity-70 max-w-md mt-2 pl-[52px]">
-                    Conecte sua conta profissional para permitir que o sistema responda DMs e comentários automaticamente.
+                    Conecte sua conta para habilitar automações.
                   </p>
                 )}
               </div>
@@ -184,7 +178,7 @@ export default function SettingsClient() {
                     ) : (
                       <>
                         <InstagramIcon />
-                        Conectar Instagram
+                        Entrar com Instagram
                       </>
                     )}
                   </button>

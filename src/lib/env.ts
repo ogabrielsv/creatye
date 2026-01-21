@@ -9,10 +9,11 @@ export function getServerEnv() {
     const vars = {
         NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
         SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
-        META_APP_ID: process.env.META_APP_ID || process.env.INSTAGRAM_APP_ID, // fallback
-        META_APP_SECRET: process.env.META_APP_SECRET || process.env.INSTAGRAM_APP_SECRET, // fallback
-        META_REDIRECT_URI: process.env.META_REDIRECT_URI,
-        META_WEBHOOK_VERIFY_TOKEN: process.env.META_WEBHOOK_VERIFY_TOKEN,
+        INSTAGRAM_CLIENT_ID: process.env.INSTAGRAM_CLIENT_ID,
+        INSTAGRAM_CLIENT_SECRET: process.env.INSTAGRAM_CLIENT_SECRET,
+        INSTAGRAM_REDIRECT_URI: process.env.INSTAGRAM_REDIRECT_URI,
+        AUTH_STATE_SECRET: process.env.AUTH_STATE_SECRET,
+        CRON_SECRET: process.env.CRON_SECRET,
     };
 
     const missing = Object.entries(vars)
@@ -20,7 +21,8 @@ export function getServerEnv() {
         .map(([key]) => key);
 
     if (missing.length > 0) {
-        console.error('[ENV_ERROR] Missing variables:', missing.join(', '));
+        // We log minimal info to avoid leaking secrets
+        console.error('[ENV_ERROR] Missing required server variables:', missing.join(', '));
         throw new EnvError(`Variáveis de ambiente ausentes: ${missing.join(', ')}`);
     }
 
@@ -31,6 +33,7 @@ export function getClientEnv() {
     const vars = {
         NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
         NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+        APP_URL: process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000'
     };
 
     const missing = Object.entries(vars)
@@ -39,7 +42,6 @@ export function getClientEnv() {
 
     if (missing.length > 0) {
         console.error('[ENV_ERROR] Client variables missing:', missing.join(', '));
-        // Don't throw to avoid crashing entire client bundle, but log error
     }
 
     return vars;

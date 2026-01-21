@@ -1,20 +1,32 @@
+import crypto from "crypto";
 
-export async function refreshLongLivedToken(accessToken: string) {
-    try {
-        const url = `https://graph.instagram.com/refresh_access_token?grant_type=ig_refresh_token&access_token=${accessToken}`;
-        const res = await fetch(url, { method: 'GET' });
-        const data = await res.json();
+function base64url(input: Buffer | string) {
+    return Buffer.from(input).toString("base64url");
+}
 
-        if (data.error) {
-            throw new Error(data.error.message);
-        }
+export function createSignedState(payload: any, secret: string) {
+    const body = base64url(JSON.stringify(payload));
+    const sig = crypto.createHmac("sha256", secret).update(body).digest("base64url");
+    return `${body}.${sig}`;
+}
 
-        return {
-            access_token: data.access_token,
-            expires_in: data.expires_in // seconds
-        };
-    } catch (error) {
-        console.error('Error refreshing Instagram token:', error);
-        throw error;
+export function verifySignedState(state: string, secret: string) {
+    const parts = state.split(".");
+    if (parts.length !== 2) throw new Error("Formato de estado inválido");
+
+    const [body, sig] = parts;
+    const expected = crypto.createHmac("sha256", secret).update(body).digest("base64url");
+
+    // Constant time comparison to prevent timing attacks
+    const sigBuffer = Buffer.from(sig);
+    const expectedBuffer = Buffer.from(expected);
+
+    if (sigBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(sigBuffer, expectedBuffer)) {
+        throw new Error("Assinatura de estado inválida");
     }
+
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+    if (Date.now() > payload.exp) throw new Error("Sessão expirada");
+
+    return payload;
 }
