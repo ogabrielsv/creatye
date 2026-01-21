@@ -55,7 +55,7 @@ export default function SettingsClient() {
   const onConnect = () => {
     setLoading(true);
     // Directly go to new connect route that does validation
-    window.location.href = "/api/instagram/connect";
+    window.location.href = "/api/instagram/authorize";
   };
 
   const onDisconnect = async () => {
@@ -117,8 +117,8 @@ export default function SettingsClient() {
           {statusMsg && (
             <div
               className={`p-4 rounded-xl border flex items-start gap-3 ${statusMsg.type === "success"
-                  ? "bg-green-500/10 border-green-500/20 text-green-400"
-                  : "bg-red-500/10 border-red-500/20 text-red-400"
+                ? "bg-green-500/10 border-green-500/20 text-green-400"
+                : "bg-red-500/10 border-red-500/20 text-red-400"
                 }`}
             >
               <div className="mt-0.5 font-bold">

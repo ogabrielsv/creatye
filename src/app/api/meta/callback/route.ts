@@ -87,22 +87,23 @@ export async function GET(request: NextRequest) {
             throw new Error('Nenhuma conta comercial do Instagram vinculada às suas Páginas.');
         }
 
-        // 5. Build Safe Payload using explicit required fields + logic
+        // 5. Build Safe Payload
         const supabaseAdmin = createSupabaseClient(
             process.env.NEXT_PUBLIC_SUPABASE_URL!,
             process.env.SUPABASE_SERVICE_ROLE_KEY!,
             { auth: { persistSession: false } }
         );
 
-        // Required minimal schema we enforce
+        // Minimal required fields
         const payload: any = {
             user_id: user.id,
-            instagram_id: connectedAccount.igUserId, // kept for unique constraint
+            // We use 'instagram_id' if legacy code relies on it, or just ig_user_id. The unique index is on user_id.
+            // But let's verify if we need instagram_id column. The prompt didn't say.
+            // Safest: ig_user_id.
             ig_user_id: connectedAccount.igUserId,
             updated_at: new Date().toISOString()
         };
 
-        // Get safe columns (fallback to known superset from migration)
         const safeCols = await getSafeConfigColumns(supabaseAdmin);
 
         if (safeCols.has('page_access_token')) payload.page_access_token = connectedAccount.pageAccessToken;
@@ -110,17 +111,16 @@ export async function GET(request: NextRequest) {
         if (safeCols.has('user_access_token')) payload.user_access_token = accessToken;
         if (safeCols.has('ig_username')) payload.ig_username = connectedAccount.username;
         if (safeCols.has('disconnected_at')) payload.disconnected_at = null;
+        if (safeCols.has('instagram_id')) payload.instagram_id = connectedAccount.igUserId;
 
+        // 6. UPSERT with onConflict: 'user_id'
+        // This relies on: CREATE UNIQUE INDEX instagram_accounts_user_id_uidx ON public.instagram_accounts(user_id);
         const { error: upsertError } = await supabaseAdmin
             .from('instagram_accounts')
             .upsert(payload, { onConflict: 'user_id' });
 
         if (upsertError) {
             console.error('[DB Error]', upsertError);
-            // Verify if error is about missing column despite our check (race condition or migration lag)
-            if (upsertError.message.includes('column')) {
-                throw new Error('Erro de esquema de banco de dados. Contate o suporte.');
-            }
             throw new Error('Erro ao salvar conexão: ' + upsertError.message);
         }
 

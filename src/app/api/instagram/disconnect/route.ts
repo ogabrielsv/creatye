@@ -19,27 +19,23 @@ export async function POST(request: Request) {
         { auth: { persistSession: false } }
     )
 
-    // Build safe update payload
     const safeCols = await getSafeConfigColumns(supabaseAdmin);
     const updates: any = {};
 
     if (safeCols.has('disconnected_at')) updates.disconnected_at = new Date().toISOString();
     if (safeCols.has('page_access_token')) updates.page_access_token = null;
     if (safeCols.has('user_access_token')) updates.user_access_token = null;
+    if (safeCols.has('access_token')) updates.access_token = null; // Clear legacy if exists
 
-    if (Object.keys(updates).length === 0) {
-        // Fallback if no columns found (should not happen if migration ran)
-        // Ensure we at least do something or return ok
-        return NextResponse.json({ ok: true, note: 'No columns to update' });
-    }
+    if (Object.keys(updates).length > 0) {
+        const { error } = await supabaseAdmin
+            .from('instagram_accounts')
+            .update(updates)
+            .eq('user_id', user.id);
 
-    const { error } = await supabaseAdmin
-        .from('instagram_accounts')
-        .update(updates)
-        .eq('user_id', user.id)
-
-    if (error) {
-        return NextResponse.json({ error: error.message }, { status: 500 })
+        if (error) {
+            return NextResponse.json({ error: error.message }, { status: 500 })
+        }
     }
 
     return NextResponse.json({ ok: true })
