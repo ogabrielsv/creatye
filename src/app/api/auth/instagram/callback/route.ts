@@ -39,23 +39,74 @@ export async function GET(req: Request) {
         // 2. Verify State
         const payload = verifyState(state, stateSecret);
 
-        // 3. Exchange code for access token (Graph API for Business)
-        const tokenUrl = new URL("https://graph.facebook.com/v19.0/oauth/access_token");
-        tokenUrl.searchParams.set("client_id", clientId);
-        tokenUrl.searchParams.set("client_secret", clientSecret);
-        tokenUrl.searchParams.set("redirect_uri", redirectUri);
-        tokenUrl.searchParams.set("code", code);
+        // --- START FIXED TOKEN EXCHANGE BLOCK ---
 
-        const tokenRes = await fetch(tokenUrl.toString(), { method: "GET" });
+        const clientId =
+            process.env.INSTAGRAM_CLIENT_ID ||
+            process.env.IG_BIZ_CLIENT_ID ||
+            process.env.INSTAGRAM_APP_ID ||
+            process.env.META_APP_ID;
+
+        const clientSecret =
+            process.env.INSTAGRAM_CLIENT_SECRET ||
+            process.env.IG_BIZ_CLIENT_SECRET ||
+            process.env.INSTAGRAM_APP_SECRET ||
+            process.env.META_APP_SECRET;
+
+        const redirectUriEnv =
+            process.env.INSTAGRAM_REDIRECT_URI ||
+            process.env.IG_BIZ_REDIRECT_URI ||
+            process.env.META_REDIRECT_URI;
+
+        const appUrl = process.env.APP_URL || new URL(req.url).origin;
+
+        // Force absolute redirect URI and fail fast if invalid
+        const redirectUri = (redirectUriEnv && redirectUriEnv.startsWith("http"))
+            ? redirectUriEnv
+            : `${appUrl}/api/auth/instagram/callback`;
+
+        console.log("[IG CALLBACK] redirectUri used =", redirectUri);
+        console.log("[IG CALLBACK] clientId present =", !!clientId);
+
+        if (!clientId || !clientSecret) {
+            console.error("[IG CALLBACK] Missing clientId/clientSecret");
+            throw new Error("Falha na troca de token");
+        }
+        if (!redirectUri.startsWith("http")) {
+            console.error("[IG CALLBACK] redirectUri not absolute:", redirectUri);
+            throw new Error("Falha na troca de token");
+        }
+
+        // IMPORTANT: do NOT encodeURIComponent here. URLSearchParams will encode safely once.
+        const body = new URLSearchParams();
+        body.set("client_id", clientId);
+        body.set("client_secret", clientSecret);
+        body.set("grant_type", "authorization_code");
+        body.set("redirect_uri", redirectUri);
+        body.set("code", code); // code from query
+
+        // Safe debug: hide secret
+        const safeBody = new URLSearchParams(body);
+        safeBody.set("client_secret", "HIDDEN");
+        console.log("[IG CALLBACK] token exchange params =", safeBody.toString());
+
+        const tokenRes = await fetch("https://graph.facebook.com/v19.0/oauth/access_token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body,
+        });
+
         const tokenJson = await tokenRes.json();
 
-        if (!tokenRes.ok || tokenJson.error) {
-            console.error("Token exchange failed:", tokenJson);
+        if (!tokenRes.ok) {
+            console.error("[IG CALLBACK] Token exchange failed:", tokenJson);
             throw new Error("Falha na troca de token");
         }
 
         const accessToken = tokenJson.access_token;
-        // Note: tokenJson might contain 'expires_in'. For FB Graph, access tokens are usually LLT (approx 60 days) if exchanged this way
+        // tokenJson should include access_token + token_type + expires_in etc.
+        // Continue existing flow: store token, mark connected, redirect success.
+        // --- END FIXED TOKEN EXCHANGE BLOCK ---
 
         // 4. Get User & Account Details (We need to find the Instagram Business Account ID)
         // We query /me/accounts to get Pages -> IG Business Account
