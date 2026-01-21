@@ -1,17 +1,16 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
-import { validateInstagramEnv, IG_CLIENT_ID, IG_REDIRECT_URI, AUTH_STATE_SECRET, APP_URL } from "@/lib/env";
+import { getEnv, getAppUrl } from "@/lib/env";
 
-// Minimal helpers for secure state
+export const dynamic = 'force-dynamic'; // Ensure envs are read at runtime
+
+// Helper helpers
 function base64url(input: string) {
     return Buffer.from(input).toString("base64url");
 }
-function uuidv4() {
-    return crypto.randomUUID();
-}
+
 function createState(secret: string, nonce: string) {
     const now = Date.now();
-    // State payload includes nonce, expiration, and next path
     const payload = {
         nonce: nonce,
         iat: now,
@@ -19,54 +18,54 @@ function createState(secret: string, nonce: string) {
         next: "/settings?tab=integracoes"
     };
     const body = base64url(JSON.stringify(payload));
-    // HMAC signature to prevent tampering
     const sig = crypto.createHmac("sha256", secret).update(body).digest("base64url");
     return `${body}.${sig}`;
 }
 
 export async function GET(req: Request) {
     try {
-        // 1. Validate & Read Env (Strict)
-        validateInstagramEnv();
+        // 1. Read Envs (Runtime)
+        const clientId = getEnv("INSTAGRAM_CLIENT_ID");
+        const redirectUriRaw = getEnv("INSTAGRAM_REDIRECT_URI");
+        const authStateSecret = getEnv("AUTH_STATE_SECRET");
 
+        // Validate redirect URI format
+        if (!redirectUriRaw.startsWith("https://")) {
+            throw new Error(`INSTAGRAM_REDIRECT_URI deve iniciar com https://. Valor: ${redirectUriRaw}`);
+        }
+        const redirectUri = redirectUriRaw; // already trimmed by getEnv
+
+        // 2. Log Debug Info (Safe)
         console.log("[IG CONNECT] Starting flow");
-        console.log("[IG CONNECT] Client ID (last 4):", IG_CLIENT_ID.slice(-4));
-        console.log("[IG CONNECT] Redirect URI:", IG_REDIRECT_URI);
+        console.log(`[IG CONNECT] redirect_uri=${redirectUri}`);
+        console.log(`[IG CONNECT] client_id_present=${!!clientId}`);
 
-        // Generate Nonce & State
+        // 3. Generate State
         const nonce = crypto.randomBytes(16).toString("hex");
-        const state = createState(AUTH_STATE_SECRET, nonce);
+        const state = createState(authStateSecret, nonce);
 
-        console.log("[IG CONNECT] Generated state:", state.substring(0, 10) + "...");
+        console.log(`[IG CONNECT] state_prefix=${state.substring(0, 10)}...`);
 
-        // Construct the JSON params for the consent flow
-        // Scopes requested: Basic, Comments, Messages (for full automations)
-        const params = {
-            client_id: IG_CLIENT_ID,
-            redirect_uri: IG_REDIRECT_URI,
-            response_type: "code",
-            state: state,
-            scope: "instagram_business_basic,instagram_business_manage_comments,instagram_business_manage_messages",
-            logger_id: uuidv4(),
-            app_id: IG_CLIENT_ID,
-            platform_app_id: IG_CLIENT_ID
-        };
+        // 4. Build Official Instagram OAuth URL
+        // https://www.instagram.com/oauth/authorize
+        const authUrl = new URL("https://www.instagram.com/oauth/authorize");
+        authUrl.searchParams.set("client_id", clientId);
+        authUrl.searchParams.set("redirect_uri", redirectUri);
+        authUrl.searchParams.set("response_type", "code");
+        authUrl.searchParams.set("scope", "instagram_business_basic,instagram_business_manage_comments,instagram_business_manage_messages");
+        authUrl.searchParams.set("state", state);
+        // Optional: force_authentication=1 ensures user can switch accounts
+        // authUrl.searchParams.set("force_authentication", "1"); 
 
-        // Build the consent URL
-        const consent = new URL("https://www.instagram.com/consent/");
-        consent.searchParams.set("flow", "ig_biz_login_oauth");
-        consent.searchParams.set("params_json", JSON.stringify(params));
-        consent.searchParams.set("source", "oauth_permissions_page_www");
+        // 5. Redirect
+        const response = NextResponse.redirect(authUrl.toString(), { status: 302 });
 
-        // Redirect user to Instagram Consent
-        const response = NextResponse.redirect(consent.toString(), { status: 302 });
-
-        // Store nonce in httpOnly cookie to prevent replay/CSRF
+        // Store nonce to prevent CSRF
         response.cookies.set("ig_oauth_nonce", nonce, {
             httpOnly: true,
             secure: process.env.NODE_ENV === 'production',
             path: '/',
-            maxAge: 600, // 10 min matches state exp
+            maxAge: 600,
             sameSite: 'lax'
         });
 
@@ -74,6 +73,8 @@ export async function GET(req: Request) {
 
     } catch (e: any) {
         console.error("[IG CONNECT ERROR]", e);
-        return NextResponse.redirect(new URL(`/settings?error=${encodeURIComponent(e.message || 'Erro config')}`, APP_URL), { status: 302 });
+        const appUrl = getAppUrl();
+        // Send error to UI
+        return NextResponse.redirect(new URL(`/settings?error=${encodeURIComponent(e.message || 'Erro de configuração')}`, appUrl), { status: 302 });
     }
 }
