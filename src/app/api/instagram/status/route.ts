@@ -1,31 +1,35 @@
-import { createClient } from '@/lib/supabase/server'
-import { NextResponse } from 'next/server'
+import { createServerClient } from '@/lib/supabase/server-admin';
+import { NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server'; // for auth context
 
-export async function GET() {
-    const supabase = await createClient()
+export const dynamic = 'force-dynamic';
 
-    const { data: { user } } = await supabase.auth.getUser()
+export async function GET(request: Request) {
+    // Check Auth
+    const supabaseAuth = await createClient();
+    const { data: { user } } = await supabaseAuth.auth.getUser();
+
     if (!user) {
-        return NextResponse.json({ connected: false }, { status: 401 })
+        return NextResponse.json({ connected: false });
     }
 
-    // Fetch from instagram_accounts
-    const { data: account } = await supabase
+    const supabaseAdmin = createServerClient();
+
+    // Find active connection
+    const { data } = await supabaseAdmin
         .from('instagram_accounts')
-        .select('id, ig_username, ig_user_id, page_id, page_access_token, disconnected_at')
+        .select('ig_username, ig_user_id')
         .eq('user_id', user.id)
-        .single()
+        .is('disconnected_at', null)
+        .maybeSingle();
 
-    if (!account) {
-        return NextResponse.json({ connected: false })
+    if (data) {
+        return NextResponse.json({
+            connected: true,
+            ig_username: data.ig_username,
+            ig_user_id: data.ig_user_id
+        });
     }
 
-    const isConnected = !!(account.page_access_token && !account.disconnected_at);
-
-    return NextResponse.json({
-        connected: isConnected,
-        ig_username: account.ig_username,
-        ig_user_id: account.ig_user_id,
-        page_id: account.page_id
-    })
+    return NextResponse.json({ connected: false });
 }

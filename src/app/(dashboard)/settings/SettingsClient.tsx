@@ -30,7 +30,7 @@ export default function SettingsClient() {
   const [data, setData] = useState<{ connected: boolean; ig_username?: string } | null>(null);
   const [checking, setChecking] = useState(true);
 
-  // Status message logic with error catching
+  // Status message logic
   const statusMsg = useMemo(() => {
     if (connected === "conectado") return { type: "success", text: "Instagram conectado com sucesso! ✅" };
     if (error) return { type: "error", text: decodeURIComponent(error) };
@@ -54,8 +54,7 @@ export default function SettingsClient() {
 
   const onConnect = () => {
     setLoading(true);
-    // Directly go to new connect route that does validation
-    window.location.href = "/api/instagram/authorize";
+    window.location.href = "/api/instagram/connect";
   };
 
   const onDisconnect = async () => {
@@ -65,8 +64,11 @@ export default function SettingsClient() {
       const res = await fetch('/api/instagram/disconnect', { method: 'POST' });
       if (res.ok) {
         setData({ connected: false });
-        router.refresh();
-        router.push('/settings?tab=integracoes');
+        router.refresh(); // This might trigger server re-render
+        router.push('/settings?tab=integracoes'); // Clear url params
+      } else {
+        const j = await res.json();
+        alert("Erro: " + (j.error || "Desconhecido"));
       }
     } catch (e) {
       alert("Erro ao desconectar.");
@@ -79,7 +81,7 @@ export default function SettingsClient() {
     return (
       <div className="p-8 flex items-center justify-center gap-2">
         <Loader2 className="w-6 h-6 animate-spin text-white/50" />
-        <span className="text-white/50">Carregando configurações...</span>
+        <span className="text-white/50">Carregando...</span>
       </div>
     );
   }
@@ -89,8 +91,8 @@ export default function SettingsClient() {
       <div className="flex justify-between items-center mb-2">
         <h1 className="text-3xl font-bold">Configurações</h1>
         {isDev && (
-          <a href="/api/meta/diagnose" target="_blank" className="text-xs text-brand-400 border border-brand-500/30 px-2 py-1 rounded hover:bg-brand-500/10">
-            🔧 Diagnóstico Env (Dev)
+          <a href="/api/instagram/health" target="_blank" className="text-xs text-brand-400 border border-brand-500/30 px-2 py-1 rounded hover:bg-brand-500/10">
+            🔧 Debug API
           </a>
         )}
       </div>
@@ -117,8 +119,8 @@ export default function SettingsClient() {
           {statusMsg && (
             <div
               className={`p-4 rounded-xl border flex items-start gap-3 ${statusMsg.type === "success"
-                ? "bg-green-500/10 border-green-500/20 text-green-400"
-                : "bg-red-500/10 border-red-500/20 text-red-400"
+                  ? "bg-green-500/10 border-green-500/20 text-green-400"
+                  : "bg-red-500/10 border-red-500/20 text-red-400"
                 }`}
             >
               <div className="mt-0.5 font-bold">

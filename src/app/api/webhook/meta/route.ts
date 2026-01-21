@@ -1,97 +1,51 @@
-import { NextResponse } from 'next/server'
-import { processIncomingMessage } from '@/lib/services/automation-runner';
+import { createServerClient } from '@/lib/supabase/server-admin';
+import { NextRequest, NextResponse } from 'next/server';
+import { getServerEnv } from '@/lib/env';
 
-export async function GET(request: Request) {
-    const { searchParams } = new URL(request.url)
-    const mode = searchParams.get('hub.mode')
-    const token = searchParams.get('hub.verify_token')
-    const challenge = searchParams.get('hub.challenge')
+export async function GET(request: NextRequest) {
+    const { searchParams } = new URL(request.url);
+    const mode = searchParams.get('hub.mode');
+    const token = searchParams.get('hub.verify_token');
+    const challenge = searchParams.get('hub.challenge');
 
-    if (mode && token) {
-        if (mode === 'subscribe' && token === process.env.META_WEBHOOK_VERIFY_TOKEN) {
-            console.log('WEBHOOK_VERIFIED')
-            return new NextResponse(challenge, { status: 200 })
-        } else {
-            return new NextResponse('Forbidden', { status: 403 })
+    const env = getServerEnv();
+
+    if (mode === 'subscribe' && token === env.META_WEBHOOK_VERIFY_TOKEN) {
+        return new NextResponse(challenge);
+    }
+
+    return new NextResponse('Forbidden', { status: 403 });
+}
+
+export async function POST(request: NextRequest) {
+    const body = await request.json();
+    const supabase = createServerClient();
+
+    // Log raw entry quickly
+    console.log('[WEBHOOK] Received:', JSON.stringify(body));
+
+    // Process entries (basic logging example)
+    if (body.object === 'instagram' && body.entry) {
+        for (const entry of body.entry) {
+            // Find account for this entry (entry.id is likely ig_user_id)
+            const { data: account } = await supabase
+                .from('instagram_accounts')
+                .select('user_id')
+                .eq('ig_user_id', entry.id)
+                .single();
+
+            const userId = account?.user_id || null;
+
+            // Log execution
+            await supabase.from('automation_executions').insert({
+                user_id: userId, // might be null if not found, but we made it logs-safe
+                ig_user_id: entry.id, // now nullable if needed, but here we have it
+                raw_event: entry,
+                status: userId ? 'received' : 'no_match',
+                trigger_type: 'webhook_event'
+            });
         }
     }
 
-    return new NextResponse('Bad Request', { status: 400 })
-}
-
-export async function POST(request: Request) {
-    try {
-        if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
-            console.error('[FATAL] SUPABASE_SERVICE_ROLE_KEY is missing');
-            return new NextResponse('Server Config Error', { status: 500 });
-        }
-
-        const body = await request.json()
-
-        // Log controlled snippet
-        const payloadSnippet = JSON.stringify(body).slice(0, 4000);
-        console.log("[WEBHOOK] payload_snippet=", payloadSnippet);
-
-        if (body.object === 'instagram') {
-            const { supabaseAdmin } = await import('@/lib/supabaseAdmin');
-
-            for (const entry of body.entry) {
-                const keys = Object.keys(entry);
-                console.log(`[WEBHOOK] Entry ID=${entry.id} Keys=${keys.join(',')}`);
-
-                // 1) Handle Messaging (DMs)
-                if (entry.messaging) {
-                    for (const event of entry.messaging) {
-                        if (event.message?.is_echo) {
-                            console.log('[DM_EVENT] Ignored (is_echo=true)');
-                            continue;
-                        }
-                        if (event.delivery || event.read) continue;
-
-                        if (event.message) {
-                            const senderId = event.sender?.id;
-                            const recipientId = event.recipient?.id;
-                            // Priority: text > quick_reply > postback
-                            const text = event.message?.text
-                                || event.message?.quick_reply?.payload
-                                || event.postback?.payload;
-
-                            if (senderId && recipientId && text) {
-                                console.log(`[DM_EVENT] sender=${senderId} recipient=${recipientId} text="${text}"`);
-                                await processIncomingMessage({
-                                    platform: "instagram",
-                                    channel: "dm",
-                                    senderId,
-                                    recipientId,
-                                    text,
-                                    timestamp: event.timestamp,
-                                    rawEvent: event
-                                });
-                            } else {
-                                console.log('[DM_EVENT] Ignored (non-text)');
-                            }
-                        }
-                    }
-                }
-                // 2) Handle Changes (Comments) 
-                if (entry.changes) {
-                    for (const change of entry.changes) {
-                        if (change.field === 'comments' || change.field === 'feed') {
-                            await handleCommentEvent(supabaseAdmin, entry.id, change.value)
-                        }
-                    }
-                }
-            }
-        }
-
-        return new NextResponse('EVENT_RECEIVED', { status: 200 })
-    } catch (err) {
-        console.error('Webhook Error:', err)
-        return new NextResponse('Server Error', { status: 500 })
-    }
-}
-
-// Helper stub to prevent build error if missing
-async function handleCommentEvent(supabase: any, entryId: string, changeValue: any) {
-    console.log('[COMMENT_EVENT] Not implemented yet', entryId);
+    return NextResponse.json({ received: true });
 }

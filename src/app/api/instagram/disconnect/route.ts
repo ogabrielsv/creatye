@@ -1,42 +1,33 @@
-import { createClient } from '@/lib/supabase/server'
-import { NextResponse } from 'next/server'
-import { createClient as createSupabaseClient } from '@supabase/supabase-js'
-import { getSafeConfigColumns } from '@/lib/supabase/safe-columns'
+import { createServerClient } from '@/lib/supabase/server-admin';
+import { NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
 
-export const dynamic = 'force-dynamic'
+export const dynamic = 'force-dynamic';
 
 export async function POST(request: Request) {
-    const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
+    const supabaseAuth = await createClient();
+    const { data: { user } } = await supabaseAuth.auth.getUser();
 
     if (!user) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const supabaseAdmin = createSupabaseClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.SUPABASE_SERVICE_ROLE_KEY!,
-        { auth: { persistSession: false } }
-    )
+    const supabaseAdmin = createServerClient();
 
-    const safeCols = await getSafeConfigColumns(supabaseAdmin);
-    const updates: any = {};
+    // Revoke by clearing tokens and setting disconnected_at
+    const { error } = await supabaseAdmin
+        .from('instagram_accounts')
+        .update({
+            disconnected_at: new Date().toISOString(),
+            access_token: 'revoked',
+            page_access_token: null
+        })
+        .eq('user_id', user.id)
+        .is('disconnected_at', null);
 
-    if (safeCols.has('disconnected_at')) updates.disconnected_at = new Date().toISOString();
-    if (safeCols.has('page_access_token')) updates.page_access_token = null;
-    if (safeCols.has('user_access_token')) updates.user_access_token = null;
-    if (safeCols.has('access_token')) updates.access_token = null; // Clear legacy if exists
-
-    if (Object.keys(updates).length > 0) {
-        const { error } = await supabaseAdmin
-            .from('instagram_accounts')
-            .update(updates)
-            .eq('user_id', user.id);
-
-        if (error) {
-            return NextResponse.json({ error: error.message }, { status: 500 })
-        }
+    if (error) {
+        return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ ok: true })
+    return NextResponse.json({ ok: true });
 }
