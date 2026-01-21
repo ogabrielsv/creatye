@@ -101,20 +101,24 @@ export async function GET(request: NextRequest) {
 
         const payload = {
             user_id: user.id,
-            instagram_id: connectedAccount.igUserId, // kept for constraint unique
+            instagram_id: connectedAccount.igUserId, // kept for constraint unique if used elsewhere
             page_id: connectedAccount.pageId,
             page_access_token: connectedAccount.pageAccessToken, // CRITICAL: The Page Token
             user_access_token: accessToken, // Optional
             ig_user_id: connectedAccount.igUserId,
             ig_username: connectedAccount.username,
             updated_at: new Date().toISOString(),
-            token_updated_at: new Date().toISOString(),
+            // Important: clear disconnected_at if it was set
             disconnected_at: null
         }
 
+        // Using upsert on user_id to ensure one active account per user (if that's the logic)
+        // OR upsert on instagram_id if allowing multiple.
+        // User requested UPSERT by unique(user_id) or unique(ig_user_id) for logged-in user.
+        // Let's assume 1:1 for now to match the "Settings" UI which shows "The" connected account.
         const { error: upsertError } = await supabaseAdmin
             .from('instagram_accounts')
-            .upsert(payload, { onConflict: 'instagram_id' })
+            .upsert(payload, { onConflict: 'user_id' })
 
         if (upsertError) {
             throw new Error('Erro ao salvar no banco: ' + upsertError.message)

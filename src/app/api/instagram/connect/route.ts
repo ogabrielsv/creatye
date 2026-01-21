@@ -16,8 +16,9 @@ export async function GET(request: Request) {
     const redirect_uri = process.env.META_REDIRECT_URI
 
     if (!client_id || !redirect_uri) {
+        console.error('[IG_CONNECT] Missing env vars: META_APP_ID or META_REDIRECT_URI')
         return NextResponse.json(
-            { error: 'Configuração do Instagram ausente (META_APP_ID/META_APP_SECRET/META_REDIRECT_URI).' },
+            { error: 'Configuração do Instagram ausente (META_APP_ID ou META_REDIRECT_URI).' },
             { status: 500 }
         )
     }
@@ -25,7 +26,8 @@ export async function GET(request: Request) {
     // Generate state securely
     const state = uuidv4()
 
-    // Valid scopes ONLY
+    // Valid scopes ONLY for IG DM
+    // Do not include pages_manage_metadata or pages_messaging if not needed/approved
     const scopes = [
         'instagram_basic',
         'instagram_manage_messages',
