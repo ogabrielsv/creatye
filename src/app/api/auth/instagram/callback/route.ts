@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { createServerClient } from "@/lib/supabase/server-admin";
+import { getServerEnv, getInstagramRedirectUri } from "@/lib/env";
 
 // 1. Helper to verify signed state
 function verifyState(state: string, secret: string) {
@@ -19,13 +20,12 @@ export async function GET(req: Request) {
     const state = url.searchParams.get("state");
     const errorParam = url.searchParams.get("error");
 
-    const appUrl = process.env.APP_URL || url.origin;
+    // Cookie check
+    const cookies = req.headers.get("cookie");
+    const nonceCookie = cookies?.split(';').find(c => c.trim().startsWith('ig_oauth_nonce='))?.split('=')[1];
 
-    // Clean vars
-    const clientId = process.env.IG_BIZ_CLIENT_ID!;
-    const clientSecret = process.env.IG_BIZ_CLIENT_SECRET!;
-    const redirectUri = process.env.IG_BIZ_REDIRECT_URI!;
-    const stateSecret = process.env.AUTH_STATE_SECRET!;
+    const env = getServerEnv();
+    const appUrl = env.APP_URL || url.origin; // fallback
 
     // Handle provider errors
     if (errorParam) {
@@ -36,79 +36,45 @@ export async function GET(req: Request) {
     try {
         if (!code || !state) throw new Error("Missing code or state");
 
-        // 2. Verify State
-        const payload = verifyState(state, stateSecret);
+        // 2. Verify State & Nonce
+        const payload = verifyState(state, env.AUTH_STATE_SECRET);
 
-        // --- START FIXED TOKEN EXCHANGE BLOCK ---
-
-        const clientId =
-            process.env.INSTAGRAM_CLIENT_ID ||
-            process.env.IG_BIZ_CLIENT_ID ||
-            process.env.INSTAGRAM_APP_ID ||
-            process.env.META_APP_ID;
-
-        const clientSecret =
-            process.env.INSTAGRAM_CLIENT_SECRET ||
-            process.env.IG_BIZ_CLIENT_SECRET ||
-            process.env.INSTAGRAM_APP_SECRET ||
-            process.env.META_APP_SECRET;
-
-        const redirectUriEnv =
-            process.env.INSTAGRAM_REDIRECT_URI ||
-            process.env.IG_BIZ_REDIRECT_URI ||
-            process.env.META_REDIRECT_URI;
-
-        const appUrl = process.env.APP_URL || new URL(req.url).origin;
-
-        // Force absolute redirect URI and fail fast if invalid
-        const redirectUri = (redirectUriEnv && redirectUriEnv.startsWith("http"))
-            ? redirectUriEnv
-            : `${appUrl}/api/auth/instagram/callback`;
-
-        console.log("[IG CALLBACK] redirectUri used =", redirectUri);
-        console.log("[IG CALLBACK] clientId present =", !!clientId);
-
-        if (!clientId || !clientSecret) {
-            console.error("[IG CALLBACK] Missing clientId/clientSecret");
-            throw new Error("Falha na troca de token");
+        if (!nonceCookie || nonceCookie !== payload.nonce) {
+            throw new Error("Nonce mismatch (CSRF detected)");
         }
+
+        // 3. Exchange code for access token (Graph API for Business)
+        const redirectUri = getInstagramRedirectUri();
+        console.log("[IG CALLBACK] Exchanging token. Params:");
+        console.log(" - Client ID present:", !!env.INSTAGRAM_CLIENT_ID);
+        console.log(" - Redirect URI:", redirectUri);
+
         if (!redirectUri.startsWith("http")) {
-            console.error("[IG CALLBACK] redirectUri not absolute:", redirectUri);
-            throw new Error("Falha na troca de token");
+            throw new Error("Redirect URI must be absolute");
         }
 
-        // IMPORTANT: do NOT encodeURIComponent here. URLSearchParams will encode safely once.
         const body = new URLSearchParams();
-        body.set("client_id", clientId);
-        body.set("client_secret", clientSecret);
+        body.set("client_id", env.INSTAGRAM_CLIENT_ID);
+        body.set("client_secret", env.INSTAGRAM_CLIENT_SECRET);
         body.set("grant_type", "authorization_code");
         body.set("redirect_uri", redirectUri);
-        body.set("code", code); // code from query
-
-        // Safe debug: hide secret
-        const safeBody = new URLSearchParams(body);
-        safeBody.set("client_secret", "HIDDEN");
-        console.log("[IG CALLBACK] token exchange params =", safeBody.toString());
+        body.set("code", code);
 
         const tokenRes = await fetch("https://graph.facebook.com/v19.0/oauth/access_token", {
             method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body,
+            body: body
         });
 
         const tokenJson = await tokenRes.json();
 
-        if (!tokenRes.ok) {
-            console.error("[IG CALLBACK] Token exchange failed:", tokenJson);
-            throw new Error("Falha na troca de token");
+        if (!tokenRes.ok || tokenJson.error) {
+            console.error("Token exchange failed:", tokenJson);
+            throw new Error(`Falha na troca de token: ${tokenJson.error?.message || 'Erro desconhecido'}`);
         }
 
         const accessToken = tokenJson.access_token;
-        // tokenJson should include access_token + token_type + expires_in etc.
-        // Continue existing flow: store token, mark connected, redirect success.
-        // --- END FIXED TOKEN EXCHANGE BLOCK ---
 
-        // 4. Get User & Account Details (We need to find the Instagram Business Account ID)
+        // 4. Get User & Account Details
         // We query /me/accounts to get Pages -> IG Business Account
         const pagesRes = await fetch(
             `https://graph.facebook.com/v19.0/me/accounts?fields=id,name,access_token,instagram_business_account{id,username}&access_token=${accessToken}`
@@ -118,7 +84,6 @@ export async function GET(req: Request) {
         if (pagesData.error) throw new Error("Erro ao buscar páginas: " + pagesData.error.message);
 
         let connectedAccount = null;
-        // Find the first page with a connected IG business account
         if (pagesData.data && Array.isArray(pagesData.data)) {
             for (const page of pagesData.data) {
                 if (page.instagram_business_account?.id) {
@@ -137,64 +102,31 @@ export async function GET(req: Request) {
             throw new Error("Nenhuma conta Instagram Business conectada encontrada.");
         }
 
-        // 5. Persist in Database (using Service Role)
-        const supabase = createServerClient();
-        // We don't have the internal user_id in the state payload in the 'connect' route example above, 
-        // but typically we should. 
-        // For now, let's assume we can get it from the current session or rely on the state if we added it.
-        // Let's refetch session to be safe.
-        // IMPORTANT: 'createServerClient' (the one we imported) uses Service Role, so it doesn't represent a logged-in user session by default unless we pass cookies. 
-        // Let's try to get the user from the supabase-js auth (if cookies are passed) OR if we can't, 
-        // we should have embedded `userId` in the `createState` function in `connect/route.ts`. 
-        // Looking at the provided `connect` code, it didn't include `userId`. 
-        // This is a common pitfall. Let's fix it: The User will be logged in on the browser, so we can try valid session check. 
-
-        // We will verify session via standard means for now.
-        // If that fails, we can't link. 
-        // BUT we are in a 'callback' route, cookies should be present.
-
-        // Let's assume we can get the user via headers/cookies.
-        // However, clean architecture suggests `createServerClient` is admin.
-        // Let's use `auth.getUser()` with the incoming request cookies if possible, or just fail for now if we can't key it.
-        // The prompt implementation of state didn't preserve userId. I'll stick to expected behavior:
-        // We need to link to a user. Best effort:
-        // (In a real app, pass userId in state).
-
-        // Since I can't edit `connect/route.ts` again in this same step to add userId without losing focus,
-        // I will try to get the user from the session.
-
-        // NOTE: This assumes Supabase Auth cookies are set and valid on the domain.
-        const { data: { user } } = await supabase.auth.getUser();
-        // Actually `createServerClient` in `server-admin.ts` (from previous context) might not read cookies by default if it's pure admin.
-        // If `auth.getUser()` returns null, we have a problem.
-        // But let's proceed assuming the user is logged in (session cookie).
-        // If not, we throw.
-
-        // Wait, `createServerClient` as defind in previous turns (admin) usually does NOT read cookies.
-        // We should use the standard `createClient` from `@/lib/supabase/server` to get the user, then admin to write.
-
-        // Let's try to import the session client.
-        const { createClient: createSessionClient } = await import('@/lib/supabase/server');
-        const sessionSupabase = await createSessionClient();
+        // 5. Persist in Database
+        // We need to link with the logged in user.
+        const { createClient } = await import('@/lib/supabase/server');
+        const sessionSupabase = await createClient();
         const { data: { user: sessionUser } } = await sessionSupabase.auth.getUser();
 
         if (!sessionUser) {
             throw new Error("Usuário não autenticado no callback");
         }
 
+        const supabaseAdmin = createServerClient();
+
         // Update DB
-        const { error: upsertError } = await supabase
+        const { error: upsertError } = await supabaseAdmin
             .from('instagram_accounts')
             .upsert({
                 user_id: sessionUser.id,
                 ig_user_id: connectedAccount.igUserId,
                 ig_username: connectedAccount.username,
-                access_token: connectedAccount.pageAccessToken, // Prefer page token for business features
+                access_token: connectedAccount.pageAccessToken, // Prefer page token
                 page_id: connectedAccount.pageId,
                 connected_at: new Date().toISOString(),
                 status: 'connected',
                 last_sync_at: new Date().toISOString()
-            }, { onConflict: 'user_id' });
+            }, { onConflict: 'user_id' }); // We enforce 1 IG account per user for now
 
         if (upsertError) {
             console.error("DB Upsert Error:", upsertError);
@@ -202,11 +134,16 @@ export async function GET(req: Request) {
         }
 
         // Redirect Success
-        const nextPath = payload.next || "/settings";
-        return NextResponse.redirect(new URL(`${nextPath}?tab=integracoes&ig=connected`, appUrl), { status: 302 });
+        const nextPath = payload.next || "/settings?tab=integracoes";
+        const response = NextResponse.redirect(new URL(`${nextPath}&success=1`, appUrl), { status: 302 });
+
+        // Clear nonce cookie
+        response.cookies.delete("ig_oauth_nonce");
+
+        return response;
 
     } catch (err: any) {
-        console.error("Callback critical error:", err);
+        console.error("[IG CALLBACK CRITICAL]", err);
         return NextResponse.redirect(new URL("/settings?tab=integracoes&error=Falha+no+callback", appUrl), { status: 302 });
     }
 }
