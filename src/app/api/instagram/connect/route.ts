@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
-import { validateInstagramEnv, IG_CLIENT_ID, IG_REDIRECT_URI, AUTH_STATE_SECRET } from "@/lib/env";
+import { validateInstagramEnv, IG_CLIENT_ID, IG_REDIRECT_URI, AUTH_STATE_SECRET, APP_URL } from "@/lib/env";
 
 // Minimal helpers for secure state
 function base64url(input: string) {
@@ -25,17 +25,19 @@ function createState(secret: string, nonce: string) {
 }
 
 export async function GET(req: Request) {
-    const url = new URL(req.url);
-
     try {
+        // 1. Validate & Read Env (Strict)
         validateInstagramEnv();
 
         console.log("[IG CONNECT] Starting flow");
         console.log("[IG CONNECT] Client ID (last 4):", IG_CLIENT_ID.slice(-4));
         console.log("[IG CONNECT] Redirect URI:", IG_REDIRECT_URI);
 
-        // Generate Nonce
+        // Generate Nonce & State
         const nonce = crypto.randomBytes(16).toString("hex");
+        const state = createState(AUTH_STATE_SECRET, nonce);
+
+        console.log("[IG CONNECT] Generated state:", state.substring(0, 10) + "...");
 
         // Construct the JSON params for the consent flow
         // Scopes requested: Basic, Comments, Messages (for full automations)
@@ -43,9 +45,8 @@ export async function GET(req: Request) {
             client_id: IG_CLIENT_ID,
             redirect_uri: IG_REDIRECT_URI,
             response_type: "code",
-            state: createState(AUTH_STATE_SECRET, nonce),
-            scope: "instagram_business_basic,instagram_business_manage_comments,instagram_business_manage_messages", // Commas or spaces work, but let's stick to standard params_json format which wraps this object. The actual consent expects comma separated in json or space separated in standard oauth. JSON params usually handles list or string. Let's send list string.
-            // Actually, Instagram Biz Login via params_json: scope should be a comma-separated string inside the JSON object
+            state: state,
+            scope: "instagram_business_basic,instagram_business_manage_comments,instagram_business_manage_messages",
             logger_id: uuidv4(),
             app_id: IG_CLIENT_ID,
             platform_app_id: IG_CLIENT_ID
@@ -73,7 +74,6 @@ export async function GET(req: Request) {
 
     } catch (e: any) {
         console.error("[IG CONNECT ERROR]", e);
-        const appUrl = process.env.APP_URL || url.origin;
-        return NextResponse.redirect(new URL(`/settings?error=${encodeURIComponent(e.message || 'Erro config')}`, appUrl), { status: 302 });
+        return NextResponse.redirect(new URL(`/settings?error=${encodeURIComponent(e.message || 'Erro config')}`, APP_URL), { status: 302 });
     }
 }

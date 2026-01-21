@@ -10,11 +10,11 @@ export async function GET(request: Request) {
         return NextResponse.redirect(new URL('/login', request.url))
     }
 
-    const INSTAGRAM_APP_ID = process.env.META_APP_ID || process.env.INSTAGRAM_APP_ID
+    const INSTAGRAM_APP_ID = process.env.INSTAGRAM_CLIENT_ID || process.env.IG_BIZ_CLIENT_ID
     const REDIRECT_URI = process.env.META_REDIRECT_URI || `${process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_SITE_URL}/api/meta/callback`
 
     if (!INSTAGRAM_APP_ID) {
-        return NextResponse.json({ error: 'Missing META_APP_ID/INSTAGRAM_APP_ID env' }, { status: 500 })
+        return NextResponse.json({ error: 'Missing INSTAGRAM_CLIENT_ID env' }, { status: 500 })
     }
 
     // Generate state for CSRF protection
