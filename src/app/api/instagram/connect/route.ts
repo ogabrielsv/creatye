@@ -26,8 +26,6 @@ export async function GET(request: Request) {
     // Generate state securely
     const state = uuidv4()
 
-    // Valid scopes ONLY for IG DM
-    // Do not include pages_manage_metadata or pages_messaging if not needed/approved
     const scopes = [
         'instagram_basic',
         'instagram_manage_messages',
@@ -35,7 +33,14 @@ export async function GET(request: Request) {
         'pages_read_engagement'
     ].join(',')
 
-    const authUrl = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${client_id}&redirect_uri=${redirect_uri}&response_type=code&scope=${scopes}&state=${state}`
+    const authParams = new URLSearchParams();
+    authParams.append('client_id', client_id);
+    authParams.append('redirect_uri', redirect_uri);
+    authParams.append('response_type', 'code');
+    authParams.append('scope', scopes);
+    authParams.append('state', state);
+
+    const authUrl = `https://www.facebook.com/v19.0/dialog/oauth?${authParams.toString()}`;
 
     const response = NextResponse.redirect(authUrl)
 

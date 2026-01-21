@@ -50,13 +50,23 @@ export async function GET(request: NextRequest) {
         }
 
         // 1. Exchange Code for Access Token
+        const tokenParams = new URLSearchParams();
+        tokenParams.append('client_id', client_id);
+        tokenParams.append('client_secret', client_secret);
+        tokenParams.append('redirect_uri', redirect_uri);
+        tokenParams.append('code', code);
+
         const tokenRes = await fetch(
-            `https://graph.facebook.com/v19.0/oauth/access_token?client_id=${client_id}&client_secret=${client_secret}&redirect_uri=${redirect_uri}&code=${code}`
+            `https://graph.facebook.com/v19.0/oauth/access_token?${tokenParams.toString()}`
         )
         const tokenData = await tokenRes.json()
 
         if (tokenData.error) {
             console.error('Meta Token Error:', tokenData.error)
+            // Specific friendly message for secret error
+            if (tokenData.error.message.includes('client secret')) {
+                throw new Error('Erro de configuração (Secret inválido). Verifique as env vars no Vercel.')
+            }
             throw new Error('Erro ao validar token: ' + tokenData.error.message)
         }
 
