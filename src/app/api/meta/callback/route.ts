@@ -1,89 +1,87 @@
-import { createClient } from '@/lib/supabase/server'
-import { NextRequest, NextResponse } from 'next/server'
-import { createClient as createSupabaseClient } from '@supabase/supabase-js'
+import { createClient } from '@/lib/supabase/server';
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient as createSupabaseClient } from '@supabase/supabase-js';
+import { getMetaEnvOrThrow, MetaConfigError } from '@/lib/metaEnv';
 
-export const dynamic = 'force-dynamic'
+export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
-    const { searchParams } = new URL(request.url)
-    const code = searchParams.get('code')
-    const error = searchParams.get('error')
-    const state = searchParams.get('state')
+    const { searchParams } = new URL(request.url);
+    const code = searchParams.get('code');
+    const errorParam = searchParams.get('error');
+    const state = searchParams.get('state');
 
-    // Prepare redirect URL foundation
-    const settingsUrl = new URL('/settings', request.url)
-    settingsUrl.searchParams.set('tab', 'integracoes')
+    // Base URL for redirects
+    const settingsUrl = new URL('/settings', request.url);
+    settingsUrl.searchParams.set('tab', 'integracoes');
 
-    // Handle initial errors
-    if (error) {
-        settingsUrl.searchParams.set('error', 'Erro no login: ' + error)
-        return NextResponse.redirect(settingsUrl)
+    // 1. Check for basic query errors
+    if (errorParam) {
+        settingsUrl.searchParams.set('error', 'Erro retornado pelo Facebook: ' + errorParam);
+        return NextResponse.redirect(settingsUrl);
     }
 
     if (!code) {
-        settingsUrl.searchParams.set('error', 'Código de autorização não recebido')
-        return NextResponse.redirect(settingsUrl)
+        settingsUrl.searchParams.set('error', 'Código de autorização não recebido.');
+        return NextResponse.redirect(settingsUrl);
     }
 
-    // Validate State
-    const storedState = request.cookies.get('ig_oauth_state')?.value
+    // 2. Validate State (CSRF)
+    const storedState = request.cookies.get('ig_oauth_state')?.value;
     if (!state || state !== storedState) {
-        settingsUrl.searchParams.set('error', 'Estado de segurança inválido (CSRF)')
-        return NextResponse.redirect(settingsUrl)
+        settingsUrl.searchParams.set('error', 'Sessão inválida (erro de estado CSRF). Tente novamente.');
+        return NextResponse.redirect(settingsUrl);
     }
 
-    // Auth Check
-    const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
+    // 3. Auth Check
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
 
     if (!user) {
-        return NextResponse.redirect(new URL('/login', request.url))
+        return NextResponse.redirect(new URL('/login', request.url));
     }
 
     try {
-        const client_id = process.env.META_APP_ID
-        const client_secret = process.env.META_APP_SECRET
-        const redirect_uri = process.env.META_REDIRECT_URI
+        // 4. Validate Env Vars
+        const { appId, appSecret, redirectUri } = getMetaEnvOrThrow();
 
-        if (!client_id || !client_secret || !redirect_uri) {
-            throw new Error('Configuração do Instagram ausente (META_APP_ID/META_APP_SECRET/META_REDIRECT_URI).')
-        }
-
-        // 1. Exchange Code for Access Token
+        // 5. Exchange Code for Access Token
         const tokenParams = new URLSearchParams();
-        tokenParams.append('client_id', client_id);
-        tokenParams.append('client_secret', client_secret);
-        tokenParams.append('redirect_uri', redirect_uri);
+        tokenParams.append('client_id', appId);
+        tokenParams.append('client_secret', appSecret);
+        tokenParams.append('redirect_uri', redirectUri);
         tokenParams.append('code', code);
 
         const tokenRes = await fetch(
             `https://graph.facebook.com/v19.0/oauth/access_token?${tokenParams.toString()}`
-        )
-        const tokenData = await tokenRes.json()
+        );
+        const tokenData = await tokenRes.json();
 
         if (tokenData.error) {
-            console.error('Meta Token Error:', tokenData.error)
+            console.error('Meta Token Error:', tokenData.error);
             // Specific friendly message for secret error
             if (tokenData.error.message.includes('client secret')) {
-                throw new Error('Erro de configuração (Secret inválido). Verifique as env vars no Vercel.')
+                throw new MetaConfigError(
+                    'Secret inválido: confira se META_APP_SECRET pertence ao mesmo App ID informado e faça Redeploy no Vercel.'
+                );
             }
-            throw new Error('Erro ao validar token: ' + tokenData.error.message)
+            throw new Error('Erro ao validar token: ' + tokenData.error.message);
         }
 
-        const accessToken = tokenData.access_token
+        const accessToken = tokenData.access_token;
 
-        // 2. Get User's Pages and Instagram Accounts
+        // 6. Get User's Pages
         const pagesRes = await fetch(
             `https://graph.facebook.com/v19.0/me/accounts?fields=id,name,access_token,instagram_business_account{id,username}&access_token=${accessToken}`
-        )
-        const pagesData = await pagesRes.json()
+        );
+        const pagesData = await pagesRes.json();
 
         if (pagesData.error) {
-            throw new Error('Erro ao buscar páginas: ' + pagesData.error.message)
+            throw new Error('Erro ao buscar páginas: ' + pagesData.error.message);
         }
 
-        const pages = pagesData.data || []
-        let connectedAccount = null
+        const pages = pagesData.data || [];
+        let connectedAccount = null;
 
         // Find first page with IG business account
         for (const page of pages) {
@@ -93,53 +91,52 @@ export async function GET(request: NextRequest) {
                     pageAccessToken: page.access_token,
                     igUserId: page.instagram_business_account.id,
                     username: page.instagram_business_account.username
-                }
-                break
+                };
+                break;
             }
         }
 
         if (!connectedAccount) {
-            throw new Error('Nenhuma conta comercial do Instagram vinculada às suas Páginas do Facebook.')
+            throw new Error('Nenhuma conta comercial do Instagram vinculada às suas Páginas do Facebook.');
         }
 
-        // 3. Save to Supabase (using Service Role)
+        // 7. Save to Supabase (using Service Role)
         const supabaseAdmin = createSupabaseClient(
             process.env.NEXT_PUBLIC_SUPABASE_URL!,
             process.env.SUPABASE_SERVICE_ROLE_KEY!,
             { auth: { persistSession: false } }
-        )
+        );
 
         const payload = {
             user_id: user.id,
-            instagram_id: connectedAccount.igUserId, // kept for constraint unique if used elsewhere
+            instagram_id: connectedAccount.igUserId,
             page_id: connectedAccount.pageId,
-            page_access_token: connectedAccount.pageAccessToken, // CRITICAL: The Page Token
-            user_access_token: accessToken, // Optional
+            page_access_token: connectedAccount.pageAccessToken,
+            user_access_token: accessToken,
             ig_user_id: connectedAccount.igUserId,
             ig_username: connectedAccount.username,
             updated_at: new Date().toISOString(),
-            // Important: clear disconnected_at if it was set
             disconnected_at: null
-        }
+        };
 
-        // Using upsert on user_id to ensure one active account per user (if that's the logic)
-        // OR upsert on instagram_id if allowing multiple.
-        // User requested UPSERT by unique(user_id) or unique(ig_user_id) for logged-in user.
-        // Let's assume 1:1 for now to match the "Settings" UI which shows "The" connected account.
         const { error: upsertError } = await supabaseAdmin
             .from('instagram_accounts')
-            .upsert(payload, { onConflict: 'user_id' })
+            .upsert(payload, { onConflict: 'user_id' });
 
         if (upsertError) {
-            throw new Error('Erro ao salvar no banco: ' + upsertError.message)
+            throw new Error('Erro ao salvar no banco: ' + upsertError.message);
         }
 
-        settingsUrl.searchParams.set('ig', 'conectado')
-        return NextResponse.redirect(settingsUrl)
+        settingsUrl.searchParams.set('ig', 'conectado');
+        return NextResponse.redirect(settingsUrl);
 
     } catch (err: any) {
-        console.error('Callback Error:', err)
-        settingsUrl.searchParams.set('error', err.message || 'Erro desconhecido')
-        return NextResponse.redirect(settingsUrl)
+        console.error('Callback Error:', err);
+
+        // Ensure error message is readable string
+        const errMsg = err instanceof MetaConfigError ? err.message : (err.message || 'Erro desconhecido');
+        settingsUrl.searchParams.set('error', errMsg);
+
+        return NextResponse.redirect(settingsUrl);
     }
 }
