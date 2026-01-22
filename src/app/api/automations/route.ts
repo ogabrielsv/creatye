@@ -114,8 +114,8 @@ export async function POST(request: NextRequest) {
         };
 
         // Attempt to insert with Title
-        let automation;
-        let error;
+        let automation: any;
+        let error: any;
 
         // Try inserting with 'title'
         try {

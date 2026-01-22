@@ -13,6 +13,7 @@ export async function getSafeConfigColumns(supabaseAdmin: ReturnType<typeof crea
 
     try {
         // Try to use the RPC we just created
+        // @ts-ignore
         const { data, error } = await supabaseAdmin.rpc('get_table_columns', { target_table: tableName });
 
         if (error || !data || !Array.isArray(data)) {
