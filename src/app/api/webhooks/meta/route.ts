@@ -1,6 +1,6 @@
-
 import { NextRequest, NextResponse } from 'next/server';
 import { processInstagramMessage } from '@/lib/automations/processor';
+import { getEnv } from '@/lib/env';
 
 export async function GET(req: NextRequest) {
     // Verification Challenge for Meta Webhooks
@@ -9,7 +9,10 @@ export async function GET(req: NextRequest) {
     const token = searchParams.get('hub.verify_token');
     const challenge = searchParams.get('hub.challenge');
 
-    if (mode === 'subscribe' && token === process.env.META_VERIFY_TOKEN) {
+    // Use standardized env var
+    const verifyToken = getEnv('INSTAGRAM_WEBHOOK_VERIFY_TOKEN');
+
+    if (mode === 'subscribe' && token === verifyToken) {
         return new NextResponse(challenge, { status: 200 });
     }
 
