@@ -52,7 +52,7 @@ export async function GET(req: Request) {
         authUrl.searchParams.set("client_id", clientId);
         authUrl.searchParams.set("redirect_uri", redirectUri);
         authUrl.searchParams.set("response_type", "code");
-        authUrl.searchParams.set("scope", "instagram_business_basic,instagram_business_manage_comments,instagram_business_manage_messages");
+        authUrl.searchParams.set("scope", "instagram_business_basic,instagram_manage_comments,instagram_business_manage_messages");
         authUrl.searchParams.set("state", state);
         // Optional: force_authentication=1 ensures user can switch accounts
         // authUrl.searchParams.set("force_authentication", "1"); 
