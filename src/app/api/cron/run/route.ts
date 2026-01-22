@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerEnv } from '@/lib/env';
 
 export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
 export const maxDuration = 60; // 1 minute max for Vercel Hobby
 
 export async function GET(request: NextRequest) {
@@ -20,8 +21,6 @@ export async function GET(request: NextRequest) {
     const supabase = createServerClient();
 
     // 1. Fetch enabled jobs
-    // In a real robust system, we check 'next_run_at'. Here we run all enabled for simplicity or check a basic 'schedule'
-    // Let's just run them if they are enabled.
     const { data: jobs } = await supabase
         .from('automation_jobs')
         .select(`
@@ -42,7 +41,6 @@ export async function GET(request: NextRequest) {
     for (const job of jobs) {
         const account = job.instagram_accounts;
         if (!account || account.status !== 'connected' || !account.access_token) {
-            // Log error
             await log(supabase, job.user_id, job.id, job.instagram_account_id, 'error', 'Job pulado: conta desconectada ou token inválido');
             continue;
         }
@@ -87,12 +85,19 @@ export async function GET(request: NextRequest) {
 }
 
 async function log(supabase: any, userId: string, jobId: string, accountId: string, level: string, msg: string, meta?: any) {
-    await supabase.from('automation_logs').insert({
-        user_id: userId,
-        job_id: jobId,
-        instagram_account_id: accountId,
-        level,
-        message: msg,
-        meta: meta || {}
-    });
+    // Ensure table exists; fails silently if not? 
+    // We assume automation_logs exists.
+    try {
+        await supabase.from('automation_logs').insert({
+            user_id: userId,
+            job_id: jobId,
+            instagram_account_id: accountId,
+            level,
+            message: msg,
+            created_at: new Date().toISOString(),
+            meta: meta || {}
+        });
+    } catch (e) {
+        console.error("Failed to write log", e);
+    }
 }

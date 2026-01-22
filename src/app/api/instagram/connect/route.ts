@@ -3,6 +3,7 @@ import crypto from "crypto";
 import { getEnv, getAppUrl } from "@/lib/env";
 
 export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
 
 function base64url(input: string) {
     return Buffer.from(input).toString("base64url");
@@ -23,6 +24,8 @@ function createState(secret: string, nonce: string) {
 
 export async function GET(req: Request) {
     try {
+        console.log("[IG CONNECT] Request received");
+
         const clientId = getEnv("INSTAGRAM_CLIENT_ID");
         const redirectUriRaw = getEnv("INSTAGRAM_REDIRECT_URI");
         const authStateSecret = getEnv("AUTH_STATE_SECRET");
@@ -33,7 +36,6 @@ export async function GET(req: Request) {
         }
         const redirectUri = redirectUriRaw;
 
-        console.log("[IG CONNECT] Starting flow");
         console.log(`[IG CONNECT] redirect_uri=${redirectUri}`);
 
         // Generate State
@@ -42,11 +44,11 @@ export async function GET(req: Request) {
 
         // Build Official Instagram OAuth URL (Direct Login)
         // https://api.instagram.com/oauth/authorize
-        // Params: enable_fb_login=0, force_authentication=1
         const authUrl = new URL("https://api.instagram.com/oauth/authorize");
         authUrl.searchParams.set("client_id", clientId);
         authUrl.searchParams.set("redirect_uri", redirectUri);
         authUrl.searchParams.set("response_type", "code");
+        // Using standard business scopes
         authUrl.searchParams.set("scope", "instagram_business_basic,instagram_business_manage_comments,instagram_business_manage_messages");
         authUrl.searchParams.set("state", state);
         authUrl.searchParams.set("enable_fb_login", "0");
