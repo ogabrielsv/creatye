@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
-import { getEnv, getAppUrl } from "@/lib/env";
+import { getServerEnv } from "@/lib/env";
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -23,37 +23,41 @@ function createState(secret: string, nonce: string) {
 }
 
 export async function GET(req: Request) {
+    const env = getServerEnv();
+    const appUrl = env.APP_URL;
+
     try {
         console.info("[IG CONNECT] Starting flow");
 
-        const clientId = getEnv("INSTAGRAM_CLIENT_ID");
-        const redirectUriRaw = getEnv("INSTAGRAM_REDIRECT_URI");
-        const authStateSecret = getEnv("AUTH_STATE_SECRET");
-
         // Validate redirect URI
-        if (!redirectUriRaw.startsWith("https://")) {
-            throw new Error(`INSTAGRAM_REDIRECT_URI deve iniciar com https://. Valor: ${redirectUriRaw}`);
+        if (!env.INSTAGRAM_REDIRECT_URI.startsWith("https://")) {
+            throw new Error(`INSTAGRAM_REDIRECT_URI deve iniciar com https://. Valor: ${env.INSTAGRAM_REDIRECT_URI}`);
         }
-        const redirectUri = redirectUriRaw;
 
-        console.info(`[IG CONNECT] redirect_uri=${redirectUri}`);
+        console.info(`[IG CONNECT] redirect_uri=${env.INSTAGRAM_REDIRECT_URI}`);
 
         // Generate State
         const nonce = crypto.randomBytes(16).toString("hex");
-        const state = createState(authStateSecret, nonce);
+        const state = createState(env.AUTH_STATE_SECRET, nonce);
 
-        // Build Official Instagram OAuth URL (Direct Login)
+        // Build Official Instagram OAuth URL
         // https://www.instagram.com/oauth/authorize
-        // NO enable_fb_login, NO force_authentication as per instruction 1 task B
         const authUrl = new URL("https://www.instagram.com/oauth/authorize");
-        authUrl.searchParams.set("client_id", clientId);
-        authUrl.searchParams.set("redirect_uri", redirectUri);
+        authUrl.searchParams.set("client_id", env.INSTAGRAM_CLIENT_ID);
+        authUrl.searchParams.set("redirect_uri", env.INSTAGRAM_REDIRECT_URI);
         authUrl.searchParams.set("response_type", "code");
-        // Using standard business scopes
+
+        // Exact scopes as requested
         authUrl.searchParams.set("scope", "instagram_business_basic,instagram_manage_comments,instagram_business_manage_messages");
+
         authUrl.searchParams.set("state", state);
 
+        // Enforce Instagram Login
+        authUrl.searchParams.set("enable_fb_login", "0");
+        authUrl.searchParams.set("force_authentication", "1");
+
         console.info(`[IG CONNECT] Redirecting to ${authUrl.origin}${authUrl.pathname}`);
+        console.info(`[IG CONNECT] Params: client_id=${env.INSTAGRAM_CLIENT_ID}, scope='...', state_prefix=${state.substring(0, 10)}...`);
 
         const response = NextResponse.redirect(authUrl.toString(), { status: 302 });
 
@@ -70,7 +74,6 @@ export async function GET(req: Request) {
 
     } catch (e: any) {
         console.error("[IG CONNECT ERROR]", e);
-        const appUrl = getAppUrl();
         return NextResponse.redirect(new URL(`/settings?error=${encodeURIComponent(e.message || 'Erro de configuração')}`, appUrl), { status: 302 });
     }
 }

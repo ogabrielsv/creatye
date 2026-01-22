@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { createServerClient } from "@/lib/supabase/server-admin";
-import { getEnv, getAppUrl } from "@/lib/env";
+import { getServerEnv } from "@/lib/env";
+import { createClient } from '@/lib/supabase/server';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -24,7 +25,8 @@ export async function GET(req: Request) {
     const errorReason = url.searchParams.get("error_reason");
     const errorDescription = url.searchParams.get("error_description");
 
-    const appUrl = getAppUrl();
+    const env = getServerEnv();
+    const appUrl = env.APP_URL;
 
     // 1. Handle Provider Errors
     if (errorParam || errorReason) {
@@ -33,17 +35,10 @@ export async function GET(req: Request) {
     }
 
     try {
-        const clientId = getEnv("INSTAGRAM_CLIENT_ID");
-        const clientSecret = getEnv("INSTAGRAM_CLIENT_SECRET");
-        const redirectUriRaw = getEnv("INSTAGRAM_REDIRECT_URI");
-        const authStateSecret = getEnv("AUTH_STATE_SECRET");
-
-        const redirectUri = redirectUriRaw;
-
         if (!code || !state) throw new Error("Missing code or state");
 
         // Verify State
-        const payload = verifyState(state, authStateSecret);
+        const payload = verifyState(state, env.AUTH_STATE_SECRET);
 
         const cookies = req.headers.get("cookie");
         const nonceCookie = cookies?.split(';').find(c => c.trim().startsWith('ig_oauth_nonce='))?.split('=')[1];
@@ -52,25 +47,21 @@ export async function GET(req: Request) {
             throw new Error("Nonce mismatch (CSRF detected)");
         }
 
-        console.info(`[IG CALLBACK] swapping code. redirect_uri=${redirectUri}`);
+        console.info(`[IG CALLBACK] swapping code. redirect_uri=${env.INSTAGRAM_REDIRECT_URI}`);
 
         // Token Exchange
-        // POST x-www-form-urlencoded
         const tokenEndpoint = "https://api.instagram.com/oauth/access_token";
-
         const body = new URLSearchParams();
-        body.set("client_id", clientId);
-        body.set("client_secret", clientSecret);
+        body.set("client_id", env.INSTAGRAM_CLIENT_ID);
+        body.set("client_secret", env.INSTAGRAM_CLIENT_SECRET);
         body.set("grant_type", "authorization_code");
-        body.set("redirect_uri", redirectUri);
+        body.set("redirect_uri", env.INSTAGRAM_REDIRECT_URI);
         body.set("code", code);
 
         const tokenRes = await fetch(tokenEndpoint, {
             method: "POST",
             body: body,
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded'
-            }
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
         });
 
         const tokenJson = await tokenRes.json();
@@ -82,10 +73,24 @@ export async function GET(req: Request) {
 
         const accessToken = tokenJson.access_token;
         const igUserId = tokenJson.user_id;
-        const grantedScopes = tokenJson.permissions || []; // Usually implicit
+
+        // Fetch User Profile (username)
+        let username = "unknown";
+        try {
+            const profileRes = await fetch(`https://graph.instagram.com/me?fields=id,username&access_token=${accessToken}`);
+            if (profileRes.ok) {
+                const profile = await profileRes.json();
+                if (profile.username) username = profile.username;
+            } else {
+                console.warn("[IG CALLBACK] Failed to fetch profile", await profileRes.text());
+            }
+        } catch (err) {
+            console.error("[IG CALLBACK] Profile fetch error", err);
+        }
+
+        console.info(`[IG CALLBACK] token_received user_id=${igUserId}`);
 
         // Persist
-        const { createClient } = await import('@/lib/supabase/server');
         const sessionSupabase = await createClient();
         const { data: { user: sessionUser } } = await sessionSupabase.auth.getUser();
 
@@ -100,40 +105,38 @@ export async function GET(req: Request) {
             .from('instagram_accounts')
             .upsert({
                 user_id: sessionUser.id,
-                ig_user_id: igUserId?.toString() || 'unknown',
+                ig_user_id: igUserId.toString(),
+                username: username,
                 access_token: accessToken,
-                connected_at: new Date().toISOString(),
-                status: 'connected',
-                // scopes: JSON.stringify(grantedScopes) // If column exists
-            }, { onConflict: 'user_id' });
+                token_type: 'bearer',
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+                status: 'connected'
+            }, { onConflict: 'user_id,ig_user_id' }); // Conflict on composite key if strict, or just user_id if 1 account per user? 
+        // The unique constraint is (user_id, ig_user_id).
+        // But user might want multiple accounts? 
+        // The prompt says: "usar UPSERT por (user_id, ig_user_id)"
 
         if (upsertError) {
             console.error("[IG CALLBACK] DB Save Error:", upsertError);
             throw new Error("Falha ao salvar conta");
         }
 
-        // Log Success
-        console.info(`[IG CALLBACK] Success. User: ${sessionUser.id}, IG: ${igUserId}`);
+        // Log to automation_logs
+        await supabaseAdmin.from('automation_logs').insert({
+            user_id: sessionUser.id,
+            level: 'info',
+            message: 'Conta do Instagram conectada com sucesso',
+            meta: {
+                phase: 'callback',
+                ig_user_id: igUserId,
+                username: username
+            },
+            created_at: new Date().toISOString()
+        });
 
-        // Log in automation_logs (or instagram_auth_logs if it existed)
-        try {
-            await supabaseAdmin.from('automation_logs').insert({
-                user_id: sessionUser.id,
-                level: 'info',
-                message: 'Instagram conectado com sucesso',
-                meta: {
-                    phase: 'callback',
-                    ig_user_id: igUserId,
-                    ok: true,
-                    payload: { scopes: grantedScopes }
-                },
-                created_at: new Date().toISOString()
-            });
-        } catch (logErr) {
-            console.error("[IG CALLBACK] Log Error", logErr);
-        }
-
-        const response = NextResponse.redirect(new URL("/settings?tab=integracoes&success=1", appUrl), { status: 302 });
+        const nextUrl = payload.next || "/dashboard";
+        const response = NextResponse.redirect(new URL(nextUrl, appUrl), { status: 302 });
         response.cookies.delete("ig_oauth_nonce");
         return response;
 
