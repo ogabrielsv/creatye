@@ -48,7 +48,7 @@ export async function GET(req: Request) {
         authUrl.searchParams.set("response_type", "code");
 
         // Exact scopes as requested
-        authUrl.searchParams.set("scope", "instagram_business_basic,instagram_manage_comments,instagram_business_manage_messages");
+        authUrl.searchParams.set("scope", "instagram_business_basic,instagram_business_manage_comments,instagram_business_manage_messages");
 
         authUrl.searchParams.set("state", state);
 

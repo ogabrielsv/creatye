@@ -68,25 +68,23 @@ async function processChange(supabase: SupabaseClient, userId: string | null, ig
 export async function logAutomation(
     supabase: SupabaseClient,
     userId: string | null,
-    igAccountId: string | null, // ig_user_id or uuid? Let's use string for versatility but DB expects uuid for FKs usually. 
-    // Actually DB schema says instagram_account_id uuid. 
-    // But here we might only have ig_user_id. 
-    // Let's try to map it if possible or leave null.
+    igAccountId: string | null,
     level: string,
     message: string,
-    meta?: any
+    meta?: any,
+    runId?: string,
+    automationId?: string
 ) {
-    // If we have userId, we can try to look up account UUID if needed, but for logs, we might just store text in meta if FK fails?
-    // The schema created: user_id uuid, instagram_account_id uuid.
-    // If we don't have the UUIDs, we assume nullable.
-
-    // We already tried to fetch userId in runAutomations.
-
-    // Check if we can find account UUID
     let accountUuid = null;
     if (igAccountId) {
-        const { data } = await supabase.from('instagram_accounts').select('id').eq('ig_user_id', igAccountId).single();
-        if (data) accountUuid = data.id;
+        // If it looks like a valid UUID, use it directly
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(igAccountId)) {
+            accountUuid = igAccountId;
+        } else {
+            // Otherwise try to find by ig_user_id
+            const { data } = await supabase.from('instagram_accounts').select('id').eq('ig_user_id', igAccountId).single();
+            if (data) accountUuid = data.id;
+        }
     }
 
     try {
@@ -95,6 +93,8 @@ export async function logAutomation(
             instagram_account_id: accountUuid,
             level,
             message,
+            run_id: runId || null,
+            automation_id: automationId || null,
             meta: { ...meta, ig_user_id_raw: igAccountId },
             created_at: new Date().toISOString()
         });

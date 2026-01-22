@@ -51,8 +51,9 @@ A automação roda via Cron Job ou chamada manual do endpoint.
 - [ ] **Validação técnica**: 
   - A linha em `webhook_events` deve ter `processed_at` preenchido.
   - A tabela `automation_logs` deve conter logs do processamento ("Processing webhook entry", "New DM received...").
+  - A tabela `automation_runs` deve conter um novo registro com `status='completed'` (ou `completed_with_errors`).
 
 ## 4. Build e Deploy
 - [ ] Rode `npm run build` localmente para garantir que não há erros de tipos ou env (ETAPA A).
 - [ ] O deploy na Vercel deve ficar VERDE.
-- [ ] Os logs da Vercel devem mostrar `[IG CONNECT]`, `[IG CALLBACK]`, `[WEBHOOK]` etc.
+- [ ] Os logs da Vercel devem mostrar `[IG CONNECT]`, `[IG CALLBACK]`, `[WEBHOOK]`, `[CRON]`.

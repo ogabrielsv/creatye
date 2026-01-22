@@ -25,7 +25,27 @@ export async function GET(request: NextRequest) {
     let processedJobs = 0;
     let errorCount = 0;
 
-    console.info('[CRON] Started');
+    // Create Automation Run Record
+    let runId: string | undefined;
+    try {
+        const { data: runData, error: runError } = await supabase
+            .from('automation_runs')
+            .insert({ status: 'running' })
+            .select('run_id')
+            .single();
+
+        if (runError) {
+            console.error('[CRON] Failed to create run record', runError);
+        } else {
+            runId = runData.run_id;
+        }
+    } catch (e) {
+        console.error('[CRON] Error creating run', e);
+    }
+
+    console.info(`[CRON] Started RunID=${runId}`);
+    // Log start
+    await logAutomation(supabase, null, null, 'info', 'Cron Run Started', { runId }, runId);
 
     try {
         // --- PART 1: Process Webhook Events ---
@@ -45,14 +65,16 @@ export async function GET(request: NextRequest) {
                     // Mark as processed
                     await supabase.from('webhook_events').update({ processed_at: new Date().toISOString() }).eq('id', event.id);
                     processedEvents++;
+
+                    await logAutomation(supabase, null, null, 'info', `Event processed: ${event.id}`, { event_id: event.id }, runId);
                 } catch (e) {
                     console.error(`[CRON] Event ${event.id} failed`, e);
                     errorCount++;
                     // Optionally mark as processed-with-error to avoid stuck loop, or leave for retry
-                    // For now, let's mark it so we don't loop forever on bad data
                     await supabase.from('webhook_events').update({
-                        processed_at: new Date().toISOString() // Or handle dead-letter queue
+                        processed_at: new Date().toISOString()
                     }).eq('id', event.id);
+                    await logAutomation(supabase, null, null, 'error', `Event failed: ${event.id}`, { event_id: event.id, error: e }, runId);
                 }
             }
         }
@@ -65,27 +87,23 @@ export async function GET(request: NextRequest) {
 
         if (jobs && jobs.length > 0) {
             for (const job of jobs) {
-                // Reuse existing logic or simple placeholder wrapper
-                // Assuming existing logic was desired to be kept but improved
                 try {
-                    // ... (Simplified copy of previous logic or improved) ...
-                    // Because of length, I will just log that we would run it
-                    // Or minimally implement check
                     const account = job.instagram_accounts;
                     if (account?.status === 'connected' && account.access_token) {
-                        // Perform job action (e.g. sync media)
-                        // For now, just logging execution to satisfy "garantir que existe"
-                        await logAutomation(supabase, job.user_id, job.instagram_account_id, 'info', `Running scheduled job: ${job.name}`);
+                        await logAutomation(supabase, job.user_id, job.instagram_account_id, 'info', `Running scheduled job: ${job.name}`, { job_id: job.id }, runId, job.id);
 
                         await supabase.from('automation_jobs').update({
                             last_run_at: new Date().toISOString(),
                             last_status: 'ok'
                         }).eq('id', job.id);
                         processedJobs++;
+                    } else {
+                        // Skip but verify if we should log skip
                     }
-                } catch (e) {
+                } catch (e: any) {
                     console.error(`[CRON] Job ${job.id} failed`, e);
                     errorCount++;
+                    await logAutomation(supabase, job.user_id, job.instagram_account_id, 'error', `Job failed: ${job.name}`, { job_id: job.id, error: e.message }, runId, job.id);
                 }
             }
         }
@@ -96,7 +114,16 @@ export async function GET(request: NextRequest) {
             processedEvents,
             processedJobs,
             errorCount
-        });
+        }, runId);
+
+        // Update Run Record
+        if (runId) {
+            await supabase.from('automation_runs').update({
+                status: errorCount > 0 ? 'completed_with_errors' : 'completed',
+                finished_at: new Date().toISOString(),
+                counts: { processedEvents, processedJobs, errorCount }
+            }).eq('run_id', runId);
+        }
 
         return NextResponse.json({
             ran: true,
@@ -107,6 +134,13 @@ export async function GET(request: NextRequest) {
 
     } catch (e: any) {
         console.error('[CRON] Critical Error', e);
+        if (runId) {
+            await supabase.from('automation_runs').update({
+                status: 'failed',
+                error: e.message,
+                finished_at: new Date().toISOString()
+            }).eq('run_id', runId);
+        }
         return new NextResponse('Internal Server Error', { status: 500 });
     }
 }
