@@ -13,7 +13,7 @@ function createState(secret: string, nonce: string) {
     const now = Date.now();
     const payload = {
         nonce: nonce,
-        iat: now,
+        iat: now, // timestamp as requested
         exp: now + 10 * 60 * 1000,
         next: "/settings?tab=integracoes"
     };
@@ -24,7 +24,7 @@ function createState(secret: string, nonce: string) {
 
 export async function GET(req: Request) {
     try {
-        console.log("[IG CONNECT] Request received");
+        console.info("[IG CONNECT] Starting flow");
 
         const clientId = getEnv("INSTAGRAM_CLIENT_ID");
         const redirectUriRaw = getEnv("INSTAGRAM_REDIRECT_URI");
@@ -36,23 +36,24 @@ export async function GET(req: Request) {
         }
         const redirectUri = redirectUriRaw;
 
-        console.log(`[IG CONNECT] redirect_uri=${redirectUri}`);
+        console.info(`[IG CONNECT] redirect_uri=${redirectUri}`);
 
         // Generate State
         const nonce = crypto.randomBytes(16).toString("hex");
         const state = createState(authStateSecret, nonce);
 
         // Build Official Instagram OAuth URL (Direct Login)
-        // https://api.instagram.com/oauth/authorize
-        const authUrl = new URL("https://api.instagram.com/oauth/authorize");
+        // https://www.instagram.com/oauth/authorize
+        // NO enable_fb_login, NO force_authentication as per instruction 1 task B
+        const authUrl = new URL("https://www.instagram.com/oauth/authorize");
         authUrl.searchParams.set("client_id", clientId);
         authUrl.searchParams.set("redirect_uri", redirectUri);
         authUrl.searchParams.set("response_type", "code");
         // Using standard business scopes
-        authUrl.searchParams.set("scope", "instagram_business_basic,instagram_business_manage_comments,instagram_business_manage_messages");
+        authUrl.searchParams.set("scope", "instagram_business_basic,instagram_manage_comments,instagram_business_manage_messages");
         authUrl.searchParams.set("state", state);
-        authUrl.searchParams.set("enable_fb_login", "0");
-        authUrl.searchParams.set("force_authentication", "1");
+
+        console.info(`[IG CONNECT] Redirecting to ${authUrl.origin}${authUrl.pathname}`);
 
         const response = NextResponse.redirect(authUrl.toString(), { status: 302 });
 

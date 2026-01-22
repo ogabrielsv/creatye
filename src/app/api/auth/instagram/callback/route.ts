@@ -52,9 +52,10 @@ export async function GET(req: Request) {
             throw new Error("Nonce mismatch (CSRF detected)");
         }
 
-        console.log(`[IG CALLBACK] swapping code. redirect_uri=${redirectUri}`);
+        console.info(`[IG CALLBACK] swapping code. redirect_uri=${redirectUri}`);
 
         // Token Exchange
+        // POST x-www-form-urlencoded
         const tokenEndpoint = "https://api.instagram.com/oauth/access_token";
 
         const body = new URLSearchParams();
@@ -66,30 +67,22 @@ export async function GET(req: Request) {
 
         const tokenRes = await fetch(tokenEndpoint, {
             method: "POST",
-            body: body
+            body: body,
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            }
         });
 
         const tokenJson = await tokenRes.json();
 
         if (!tokenRes.ok) {
-            console.error("[IG CALLBACK] Token exchange failed:", tokenRes.status, JSON.stringify(tokenJson));
+            console.error("[IG TOKEN] Token exchange failed:", tokenRes.status, JSON.stringify(tokenJson));
             throw new Error(`Falha ao obter token: ${tokenJson.error_message || tokenJson.error?.message || 'Erro desconhecido'}`);
         }
 
         const accessToken = tokenJson.access_token;
         const igUserId = tokenJson.user_id;
-
-        // Fetch User Info (Username)
-        let username = 'unknown';
-        try {
-            const userRes = await fetch(`https://graph.instagram.com/me?fields=id,username&access_token=${accessToken}`);
-            if (userRes.ok) {
-                const userData = await userRes.json();
-                if (userData.username) username = userData.username;
-            }
-        } catch (uErr) {
-            console.warn("Failed to fetch username", uErr);
-        }
+        const grantedScopes = tokenJson.permissions || []; // Usually implicit
 
         // Persist
         const { createClient } = await import('@/lib/supabase/server');
@@ -108,29 +101,37 @@ export async function GET(req: Request) {
             .upsert({
                 user_id: sessionUser.id,
                 ig_user_id: igUserId?.toString() || 'unknown',
-                username: username, // Try to save username if column exists
                 access_token: accessToken,
                 connected_at: new Date().toISOString(),
                 status: 'connected',
-                last_sync_at: new Date().toISOString()
+                // scopes: JSON.stringify(grantedScopes) // If column exists
             }, { onConflict: 'user_id' });
 
         if (upsertError) {
             console.error("[IG CALLBACK] DB Save Error:", upsertError);
-            // If username column missing causes error, retry without it? 
-            // Ideally we'd know schema. But strict prompt asks to save username.
-            throw new Error("Falha ao salvar no banco");
+            throw new Error("Falha ao salvar conta");
         }
 
         // Log Success
-        console.log(`[IG CALLBACK] Success. User: ${sessionUser.id}, IG: ${igUserId}`);
+        console.info(`[IG CALLBACK] Success. User: ${sessionUser.id}, IG: ${igUserId}`);
 
-        await supabaseAdmin.from('automation_logs').insert({
-            user_id: sessionUser.id,
-            level: 'info',
-            message: 'Instagram conectado com sucesso',
-            meta: { ig_user_id: igUserId, username: username }
-        });
+        // Log in automation_logs (or instagram_auth_logs if it existed)
+        try {
+            await supabaseAdmin.from('automation_logs').insert({
+                user_id: sessionUser.id,
+                level: 'info',
+                message: 'Instagram conectado com sucesso',
+                meta: {
+                    phase: 'callback',
+                    ig_user_id: igUserId,
+                    ok: true,
+                    payload: { scopes: grantedScopes }
+                },
+                created_at: new Date().toISOString()
+            });
+        } catch (logErr) {
+            console.error("[IG CALLBACK] Log Error", logErr);
+        }
 
         const response = NextResponse.redirect(new URL("/settings?tab=integracoes&success=1", appUrl), { status: 302 });
         response.cookies.delete("ig_oauth_nonce");
