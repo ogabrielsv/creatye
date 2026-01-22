@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server';
 import { NextRequest, NextResponse } from 'next/server';
+import { Automation } from '@/types/automation';
 
 export async function GET(request: NextRequest) {
     const supabase = await createClient();
@@ -48,7 +49,7 @@ export async function GET(request: NextRequest) {
     }
 
     // 2. Normalize
-    const normalizedData = automations.map((item: any) => ({
+    const normalizedData = automations.map((item: Automation & { automation_execution_counts?: { executions_count: number } | { executions_count: number }[] }) => ({
         ...item,
         title: item.title || item.name,
         // Use real count (array or object depending on join cardinality, usually object since single view entry per ID)
@@ -101,7 +102,7 @@ export async function POST(request: NextRequest) {
         const published_at = status === 'published' ? new Date().toISOString() : null;
 
         // Base payload
-        const payload: any = {
+        const payload = {
             name: finalName,
             description: json.description || '',
             channels: channels,
@@ -114,7 +115,7 @@ export async function POST(request: NextRequest) {
         };
 
         // Attempt to insert with Title
-        let automation: any;
+        let automation: Automation | null = null;
         let error: any;
 
         // Try inserting with 'title'
@@ -155,6 +156,10 @@ export async function POST(request: NextRequest) {
         if (error) {
             console.error("Error creating automation:", error);
             return NextResponse.json({ error: error.message }, { status: 500 });
+        }
+
+        if (!automation) {
+            return NextResponse.json({ error: "Failed to create automation (no data returned)" }, { status: 500 });
         }
 
         // Create Initial Draft with Start Node

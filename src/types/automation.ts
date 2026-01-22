@@ -4,6 +4,7 @@ export type ActionKind = 'send_dm' | 'add_tag' | 'remove_tag' | 'condition';
 export interface Automation {
     id: string;
     name: string;
+    title?: string;
     description?: string;
     enabled: boolean;
     status: 'published' | 'draft' | 'paused';

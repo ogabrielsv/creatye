@@ -1,11 +1,11 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 // Cache to avoid hitting DB on every request for the same container
 let cachedColumns: Set<string> | null = null;
 let lastFetchTime = 0;
 const CACHE_TTL_MS = 60 * 1000; // 1 minute cache
 
-export async function getSafeConfigColumns(supabaseAdmin: ReturnType<typeof createClient>, tableName: string = 'instagram_accounts'): Promise<Set<string>> {
+export async function getSafeConfigColumns(supabaseAdmin: SupabaseClient, tableName: string = 'instagram_accounts'): Promise<Set<string>> {
     const now = Date.now();
     if (cachedColumns && (now - lastFetchTime < CACHE_TTL_MS)) {
         return cachedColumns;
@@ -13,7 +13,7 @@ export async function getSafeConfigColumns(supabaseAdmin: ReturnType<typeof crea
 
     try {
         // Try to use the RPC we just created
-        // @ts-ignore
+
         const { data, error } = await supabaseAdmin.rpc('get_table_columns', { target_table: tableName });
 
         if (error || !data || !Array.isArray(data)) {
