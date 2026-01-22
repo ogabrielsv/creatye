@@ -10,7 +10,10 @@ export async function GET(request: NextRequest) {
     const secret = searchParams.get('secret');
     const env = getServerEnv();
 
-    if (secret !== env.CRON_SECRET) {
+    const authHeader = request.headers.get('authorization');
+    const hasValidAuth = (authHeader === `Bearer ${env.CRON_SECRET}`) || (secret === env.CRON_SECRET);
+
+    if (!hasValidAuth) {
         return new NextResponse('Unauthorized', { status: 401 });
     }
 

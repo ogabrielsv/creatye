@@ -32,17 +32,16 @@ export async function GET(req: Request) {
     }
 
     try {
-        // 2. Read Envs (Runtime)
         const clientId = getEnv("INSTAGRAM_CLIENT_ID");
         const clientSecret = getEnv("INSTAGRAM_CLIENT_SECRET");
         const redirectUriRaw = getEnv("INSTAGRAM_REDIRECT_URI");
         const authStateSecret = getEnv("AUTH_STATE_SECRET");
 
-        const redirectUri = redirectUriRaw; // getEnv trims it
+        const redirectUri = redirectUriRaw;
 
         if (!code || !state) throw new Error("Missing code or state");
 
-        // 3. Verify State & Nonce
+        // Verify State
         const payload = verifyState(state, authStateSecret);
 
         const cookies = req.headers.get("cookie");
@@ -52,20 +51,11 @@ export async function GET(req: Request) {
             throw new Error("Nonce mismatch (CSRF detected)");
         }
 
-        // 4. Exchange Code for Token
-        console.log(`[IG CALLBACK] exchanging token redirect_uri=${redirectUri} client_id_present=${!!clientId}`);
+        console.log(`[IG CALLBACK] swapping code. redirect_uri=${redirectUri}`);
 
-        // Use api.instagram.com for Instagram Login code exchange
-        const tokenEndpoint = "https://api.instagram.com/oauth/access_token"; // Official matching endpoint for instagram.com/oauth/authorize
-        // Note: For Business scopes, sometimes graph.facebook.com is needed, but let's try strict pair first.
-        // If the user gets permissions but fails here, it might be the endpoint. 
-        // IF this logic fails for "business" scopes, we might need to swap to graph.facebook.com.
-        // However, prompt asked for "official token endpoint" pairing to standard oauth. 
-        // Standard IG OAuth -> api.instagram.com.
-        // BUT `instagram_business_manage_messages` is a GRAPH API scope.
-        // Let's stick to the prompt's implied "Connect Direct" logic. If validation fails, we swap.
-        // Actually, many successful implementations use graph.facebook.com even with instagram.com authorize for Business. 
-        // Let's use `api.instagram.com` first as it's safer for "Instagram Login" flow logic.
+        // Token Exchange
+        // https://api.instagram.com/oauth/access_token
+        const tokenEndpoint = "https://api.instagram.com/oauth/access_token";
 
         const body = new URLSearchParams();
         body.set("client_id", clientId);
@@ -82,48 +72,31 @@ export async function GET(req: Request) {
         const tokenJson = await tokenRes.json();
 
         if (!tokenRes.ok) {
-            console.error("[IG CALLBACK] Token exchange failed. Status:", tokenRes.status);
-            console.error("[IG CALLBACK] Body:", JSON.stringify(tokenJson));
-            if (tokenJson.error?.fbtrace_id) {
-                console.error("[IG CALLBACK] fbtrace_id:", tokenJson.error.fbtrace_id);
-            }
-            throw new Error(`Falha na troca de token: ${tokenJson.error_message || tokenJson.error?.message || 'Erro desconhecido'}`);
+            console.error("[IG CALLBACK] Token exchange failed:", tokenRes.status, JSON.stringify(tokenJson));
+            throw new Error(`Falha ao obter token: ${tokenJson.error_message || tokenJson.error?.message || 'Erro desconhecido'}`);
         }
 
         const accessToken = tokenJson.access_token;
-        const igUserId = tokenJson.user_id; // Basic Display returns this
+        const igUserId = tokenJson.user_id;
 
-        // 5. Persist Connection
-        // Need to identify user. Assuming session cookie exists.
+        // Persist
         const { createClient } = await import('@/lib/supabase/server');
         const sessionSupabase = await createClient();
         const { data: { user: sessionUser } } = await sessionSupabase.auth.getUser();
 
         if (!sessionUser) {
-            throw new Error("Usuário não logado no callback");
+            throw new Error("Usuário não logado");
         }
 
-        // We might need to fetch the username if Basic Display.
-        // Or if it's Business, we might need to query Graph.
-        // Let's assume Basic Display response shape for now based on endpoint.
-        // Fetch User node
-        // If scopes are business, we might have issues querying Graph with a Basic token?
-        // Actually, `instagram.com` + `api.instagram.com` returns a "short lived Instagram User Token".
-        // It might NOT work for `instagram_business_manage_messages`.
-        // If this fails (permissions error), the user fundamentally needs "Facebook Login" but styled as Instagram.
-        // But let's follow the "DIRECT LOGIN" requirement.
-
-        // Upsert to DB
         const supabaseAdmin = createServerClient();
 
-        // We'll upsert what we have.
+        // Save Account
         const { error: upsertError } = await supabaseAdmin
             .from('instagram_accounts')
             .upsert({
                 user_id: sessionUser.id,
                 ig_user_id: igUserId?.toString() || 'unknown',
                 access_token: accessToken,
-                // We'll try to sync profile later or here if simple
                 connected_at: new Date().toISOString(),
                 status: 'connected',
                 last_sync_at: new Date().toISOString()
@@ -134,7 +107,14 @@ export async function GET(req: Request) {
             throw new Error("Falha ao salvar no banco");
         }
 
-        // Success Redirect
+        // Log Success
+        await supabaseAdmin.from('automation_logs').insert({
+            user_id: sessionUser.id,
+            level: 'info',
+            message: 'Instagram conectado com sucesso',
+            meta: { ig_user_id: igUserId, timestamp: new Date().toISOString() }
+        });
+
         const response = NextResponse.redirect(new URL("/settings?tab=integracoes&success=1", appUrl), { status: 302 });
         response.cookies.delete("ig_oauth_nonce");
         return response;
